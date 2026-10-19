@@ -141,10 +141,33 @@ const STUB = () => {
   window.__calls = calls;
   window.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(String(init.body)) : {};
-    calls.push({ url: String(url), body });
+    const target = String(url);
+    if (target.includes('/v1/tools/')) calls.push({ url: target, body });
 
     const json = (payload, status = 200) =>
       new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+
+    if (target.includes('/chat/completions')) {
+      const encoder = new TextEncoder();
+      const chunk = (text) =>
+        encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] }) + '\n\n');
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(chunk('根据资料，可以用 drop_duplicates 去重 [1]，'));
+          controller.enqueue(chunk('也可以用 openpyxl 逐行写入 [2]。'));
+          controller.enqueue(
+            encoder.encode(
+              'data: ' +
+                JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 30 } }) +
+                '\n\n',
+            ),
+          );
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
 
     if (String(url).includes('/tools/fetch')) {
       return json({ title: 'Fetched page', content: '# 正文\n\n这是抓取到的正文。' });
@@ -306,6 +329,22 @@ try {
 
   const callsAfterFirst = await cdp.evaluate(`window.__calls ? window.__calls.length : null`);
   if (!LIVE) record('一次搜索只打一次上游', callsAfterFirst === 1, `calls=${callsAfterFirst}`);
+
+  // --- AI answer ------------------------------------------------------
+  const answerReady = LIVE
+    ? `document.querySelector('#answer-body')?.innerText.trim().length > 12`
+    : `/drop_duplicates/.test(document.querySelector('#answer-body').innerText)`;
+  await waitFor(cdp.evaluate, answerReady, LIVE ? 30000 : 8000, 'answer text');
+  const answerText = await cdp.evaluate(`document.querySelector('#answer-body').innerText`);
+  record('AI 摘要渲染出答案', answerText.trim().length > 12, answerText.slice(0, 40).replace(/\s+/g, ' '));
+  record(
+    '摘要标注 AI 生成身份',
+    (await cdp.evaluate(`document.querySelector('.answer-badge')?.innerText`)) === 'AI 摘要',
+  );
+  if (!LIVE) {
+    record('引用编号变成可点击来源', (await cdp.evaluate(`document.querySelectorAll('#answer-body .cite').length`)) === 2);
+    record('来源 chips 只保留被引用项', (await cdp.evaluate(`document.querySelectorAll('#answer-foot .cite-chip').length`)) === 2);
+  }
 
   // --- pagination is local -------------------------------------------
   const firstTitlePage1 = await cdp.evaluate(`document.querySelector('.result-title').innerText`);

@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 /**
- * Quality benchmark for the local re-ranking layer.
+ * Quality benchmark for the local dedupe step.
  *
  *   DEEPSEEK_API_KEY=sk-... node scripts/bench.mjs [--count 20]
  *
- * Runs a fixed query set once (one paid request each — the "before" and "after"
- * views come from the SAME response, so the comparison itself costs nothing
- * extra), then reports what `rankResults()` changed in the first ten hits.
+ * One paid request per query; the "before" and "after" views come from the same
+ * response, so measuring costs nothing beyond the searches themselves.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -34,38 +33,25 @@ if (!KEY) {
   process.exit(1);
 }
 
-// Bundle the TS module once so the script stays runnable without a build step.
 const dir = mkdtempSync(join(tmpdir(), 'sift-bench-'));
-const bundle = join(dir, 'rank.mjs');
+const bundle = join(dir, 'dedupe.mjs');
 execFileSync(
   join(process.cwd(), 'node_modules/.bin/esbuild'),
-  ['src/core/rank.ts', '--bundle', '--format=esm', '--platform=node', `--outfile=${bundle}`],
+  ['src/core/dedupe.ts', '--bundle', '--format=esm', '--platform=node', `--outfile=${bundle}`],
   { stdio: 'ignore' },
 );
-const { rankResults, hostnameOf } = await import(bundle);
+const { dedupeResults, hostnameOf } = await import(bundle);
 
-const median = (xs) => {
-  if (xs.length === 0) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
-};
-
-const metrics = (results) => {
+const top10 = (results) => {
   const top = results.slice(0, 10);
   const hosts = top.map((r) => hostnameOf(r.url));
-  const counts = new Map();
-  for (const h of hosts) counts.set(h, (counts.get(h) ?? 0) + 1);
-  return {
-    uniqueHosts: new Set(hosts).size,
-    maxSameHost: Math.max(0, ...counts.values()),
-    medRerank: median(top.map((r) => r.rerank_score ?? 0)),
-  };
+  return { n: results.length, uniqueHosts: new Set(hosts).size };
 };
 
 const rows = [];
-let beforeSum = { uniqueHosts: 0, maxSameHost: 0, medRerank: 0 };
-let afterSum = { uniqueHosts: 0, maxSameHost: 0, medRerank: 0 };
 let removedTotal = 0;
+let beforeHosts = 0;
+let afterHosts = 0;
 
 for (const [category, query] of QUERIES) {
   const res = await fetch('https://api.deepseek.com/v1/tools/search', {
@@ -77,52 +63,42 @@ for (const [category, query] of QUERIES) {
     rows.push({ category, query, error: `HTTP ${res.status}` });
     continue;
   }
-  const data = await res.json();
-  const raw = data.results ?? [];
-  const { results: ranked, stats } = rankResults(raw);
-  const before = metrics(raw);
-  const after = metrics(ranked);
+  const raw = (await res.json()).results ?? [];
+  const { results, stats } = dedupeResults(raw);
   const removed = stats.blocklisted + stats.duplicateUrl + stats.duplicateTitle;
   removedTotal += removed;
-  for (const k of Object.keys(beforeSum)) {
-    beforeSum[k] += before[k];
-    afterSum[k] += after[k];
-  }
-  rows.push({ category, query, before, after, removed, demoted: stats.demoted, raws: raw.length });
+  const before = top10(raw);
+  const after = top10(results);
+  beforeHosts += before.uniqueHosts;
+  afterHosts += after.uniqueHosts;
+  rows.push({ category, query, before, after, removed });
   process.stdout.write('.');
 }
 console.log('\n');
 
 const pad = (s, n) => String(s).padEnd(n);
-const num = (x, d = 1) => Number(x).toFixed(d);
-
-console.log(pad('类别', 10) + pad('查询', 34) + pad('唯一域', 12) + pad('同域最多', 12) + pad('中位分', 14) + '去重');
-console.log('-'.repeat(96));
+console.log(pad('类别', 10) + pad('查询', 36) + pad('条数', 12) + pad('前十唯一域', 12) + '去重');
+console.log('-'.repeat(84));
 for (const r of rows) {
   if (r.error) {
-    console.log(pad(r.category, 10) + pad(r.query.slice(0, 16), 34) + r.error);
+    console.log(pad(r.category, 10) + pad(r.query.slice(0, 18), 36) + r.error);
     continue;
   }
-  const hostCell = `${r.before.uniqueHosts}→${r.after.uniqueHosts}`;
-  const dupCell = `${r.before.maxSameHost}→${r.after.maxSameHost}`;
-  const scoreCell = `${num(r.before.medRerank, 2)}→${num(r.after.medRerank, 2)}`;
+  const label = r.query.length > 18 ? `${r.query.slice(0, 17)}…` : r.query;
   console.log(
     pad(r.category, 10) +
-      pad(r.query.length > 16 ? `${r.query.slice(0, 15)}…` : r.query, 34) +
-      pad(hostCell, 12) +
-      pad(dupCell, 12) +
-      pad(scoreCell, 14) +
-      `${r.removed}`,
+      pad(label, 36) +
+      pad(`${r.before.n}→${r.after.n}`, 12) +
+      pad(`${r.before.uniqueHosts}→${r.after.uniqueHosts}`, 12) +
+      r.removed,
   );
 }
 
-const n = rows.filter((r) => !r.error).length || 1;
-console.log('-'.repeat(96));
+const ok = rows.filter((r) => !r.error).length || 1;
+console.log('-'.repeat(84));
 console.log(
-  `平均：唯一域 ${num(beforeSum.uniqueHosts / n)} → ${num(afterSum.uniqueHosts / n)} · ` +
-    `同域最多 ${num(beforeSum.maxSameHost / n)} → ${num(afterSum.maxSameHost / n)} · ` +
-    `中位分 ${num(beforeSum.medRerank / n, 2)} → ${num(afterSum.medRerank / n, 2)}`,
+  `平均：前十唯一域 ${(beforeHosts / ok).toFixed(1)} → ${(afterHosts / ok).toFixed(1)} · ` +
+    `共合并 ${removedTotal} 条（${QUERIES.length} 次请求，约 ¥${(QUERIES.length * 0.005).toFixed(3)}）`,
 );
-console.log(`共去掉重复/屏蔽 ${removedTotal} 条（${QUERIES.length} 次请求，约 ¥${(QUERIES.length * 0.005).toFixed(3)}）`);
 
 rmSync(dir, { recursive: true, force: true });

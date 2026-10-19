@@ -103,6 +103,20 @@
         <div class="chips" id="history" aria-label="搜索历史"></div>
       </section>
 
+      <section class="answer" id="answer" hidden aria-label="AI 摘要">
+        <div class="answer-head">
+          <span class="answer-badge">AI 摘要</span>
+          <span class="answer-meta" id="answer-meta"></span>
+          <span class="answer-actions">
+            <button class="link-btn" type="button" id="answer-copy">复制</button>
+            <button class="link-btn" type="button" id="answer-stop">停止</button>
+            <button class="link-btn" type="button" id="answer-hide">收起</button>
+          </span>
+        </div>
+        <div class="answer-body" id="answer-body"></div>
+        <div class="answer-foot" id="answer-foot"></div>
+      </section>
+
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <ol class="results" id="results" aria-label="搜索结果"></ol>
       <nav class="pager" id="pager" aria-label="分页"></nav>
@@ -152,10 +166,23 @@
         </label>
 
         <label class="row">
-          <span>重排与去重</span>
-          <select id="set-rerank">
+          <span>AI 摘要</span>
+          <select id="set-answer">
+            <option value="on">开启（模型合成答案）</option>
+            <option value="off">关闭（只给链接）</option>
+          </select>
+        </label>
+
+        <label class="row stack">
+          <span>摘要模型</span>
+          <input id="set-answer-model" placeholder="deepseek-chat" spellcheck="false" />
+        </label>
+
+        <label class="row">
+          <span>合并重复结果</span>
+          <select id="set-dedupe">
             <option value="on">开启（推荐）</option>
-            <option value="off">关闭（看原始排序）</option>
+            <option value="off">关闭（看原始结果）</option>
           </select>
         </label>
 

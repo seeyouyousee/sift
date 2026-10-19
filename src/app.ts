@@ -20,7 +20,8 @@ import {
   type TimePreset,
 } from './core/query.js';
 import { compareQueries, type ComparePreset } from './core/compare.js';
-import { rankResults, type RankStats } from './core/rank.js';
+import { dedupeResults, type DedupeStats } from './core/dedupe.js';
+import { AnswerError, buildMessages, citationIndexes, streamAnswer, type AnswerUsage } from './core/answer.js';
 import { fmtDate, fmtDuration, fmtMoney, hostOf } from './core/format.js';
 import { escapeHtml, highlight } from './core/highlight.js';
 import { detectBackend, JsonStore } from './core/storage.js';
@@ -45,7 +46,9 @@ interface Settings {
   theme: ThemeMode;
   endpoint: string;
   mode: ResultMode;
-  rerank: boolean;
+  dedupe: boolean;
+  answer: boolean;
+  answerModel: string;
 }
 
 interface SessionStats {
@@ -60,7 +63,9 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'auto',
   endpoint: '',
   mode: 'single',
-  rerank: true,
+  dedupe: true,
+  answer: true,
+  answerModel: '',
 };
 
 /* ------------------------------------------------------------------ */
@@ -88,7 +93,17 @@ export function createApp(): void {
     error: null as ApiError | null,
     mode: settings.mode,
     columns: [] as ColumnState[],
-    rank: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0, demoted: 0 } as RankStats,
+    dedupe: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0 } as DedupeStats,
+    answer: {
+      text: '',
+      sources: [] as SearchResult[],
+      citations: [] as number[],
+      running: false,
+      error: null as AnswerError | null,
+      usage: null as AnswerUsage | null,
+      elapsed: 0,
+      visible: false,
+    },
   };
 
   const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0 };
@@ -144,9 +159,18 @@ export function createApp(): void {
     setSummary: must<HTMLSelectElement>('#set-summary'),
     setTheme: must<HTMLSelectElement>('#set-theme'),
     setEndpoint: must<HTMLInputElement>('#set-endpoint'),
-    setRerank: must<HTMLSelectElement>('#set-rerank'),
+    setDedupe: must<HTMLSelectElement>('#set-dedupe'),
     compare: must<HTMLElement>('#compare'),
     modeSwitch: must<HTMLElement>('.mode-switch'),
+    answer: must<HTMLElement>('#answer'),
+    answerBody: must<HTMLElement>('#answer-body'),
+    answerMeta: must<HTMLElement>('#answer-meta'),
+    answerFoot: must<HTMLElement>('#answer-foot'),
+    answerStop: must<HTMLButtonElement>('#answer-stop'),
+    answerCopy: must<HTMLButtonElement>('#answer-copy'),
+    answerHide: must<HTMLButtonElement>('#answer-hide'),
+    setAnswer: must<HTMLSelectElement>('#set-answer'),
+    setAnswerModel: must<HTMLInputElement>('#set-answer-model'),
   };
 
   /* ---------------------------------------------------------------- */
@@ -249,16 +273,13 @@ export function createApp(): void {
   /* ---------------------------------------------------------------- */
   /* status                                                            */
   /* ---------------------------------------------------------------- */
-  /** Local re-rank + dedupe; a no-op when the user turned it off. */
-  function applyRank(results: SearchResult[]): { results: SearchResult[]; rank: RankStats } {
-    if (!settings.rerank) {
-      return { results, rank: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0, demoted: 0 } };
+  /** Merge duplicate pages; a no-op when the user turned it off. */
+  function applyDedupe(results: SearchResult[]): { results: SearchResult[]; dedupe: DedupeStats } {
+    if (!settings.dedupe) {
+      return { results, dedupe: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0 } };
     }
-    const outcome = rankResults(results, {
-      maxPerDomain: CONFIG.rankMaxPerDomain,
-      blocklist: CONFIG.rankBlocklist,
-    });
-    return { results: outcome.results, rank: outcome.stats };
+    const outcome = dedupeResults(results, { blocklist: CONFIG.dedupeBlocklist });
+    return { results: outcome.results, dedupe: outcome.stats };
   }
 
   function renderStatus(): void {
@@ -318,17 +339,14 @@ export function createApp(): void {
       (state.cached
         ? `<span class="sep">·</span><span class="ok">缓存命中，未计费</span>`
         : `<span class="sep">·</span>本次 ${fmtMoney(CONFIG.pricePerSuccessfulSearch)}`) +
-      rankNote(state.rank);
+      dedupeNote(state.dedupe);
   }
 
   /** One-line, honest note about local post-processing. */
-  function rankNote(rank: RankStats): string {
-    const removed = rank.blocklisted + rank.duplicateUrl + rank.duplicateTitle;
-    if (removed === 0 && rank.demoted === 0) return '';
-    const parts: string[] = [];
-    if (removed > 0) parts.push(`合并重复 ${removed}`);
-    if (rank.demoted > 0) parts.push(`同域降权 ${rank.demoted}`);
-    return `<span class="sep">·</span><span class="muted">${parts.join(' / ')}</span>`;
+  function dedupeNote(dedupe: DedupeStats): string {
+    const removed = dedupe.blocklisted + dedupe.duplicateUrl + dedupe.duplicateTitle;
+    if (removed === 0) return '';
+    return `<span class="sep">·</span><span class="muted">合并重复 ${removed}</span>`;
   }
 
   function describeError(error: ApiError): { title: string; hint: string } {
@@ -365,9 +383,11 @@ export function createApp(): void {
     const start = (state.page - 1) * settings.pageSize;
     const slice = state.results.slice(start, start + settings.pageSize);
 
-    for (const result of slice) {
-      el.results.appendChild(renderResult(result, terms));
-    }
+    slice.forEach((result, offset) => {
+      const row = renderResult(result, terms);
+      row.id = `result-${start + offset + 1}`;
+      el.results.appendChild(row);
+    });
   }
 
   function renderResult(result: SearchResult, terms: string[], options: { compact?: boolean } = {}): HTMLElement {
@@ -622,6 +642,7 @@ export function createApp(): void {
     clear(el.pager);
     renderStatus();
 
+    resetAnswer();
     inflightController?.abort();
     const controller = new AbortController();
     inflightController = controller;
@@ -635,9 +656,9 @@ export function createApp(): void {
         stats.cacheHits++;
         state.cached = true;
         state.elapsed = performance.now() - started;
-        const ranked = applyRank(cached.results);
-        state.results = ranked.results;
-        state.rank = ranked.rank;
+        const deduped = applyDedupe(cached.results);
+        state.results = deduped.results;
+        state.dedupe = deduped.dedupe;
         state.loading = false;
         finishSearch(text, options);
       } else {
@@ -650,9 +671,9 @@ export function createApp(): void {
         stats.spend += CONFIG.pricePerSuccessfulSearch;
         state.cached = false;
         state.elapsed = performance.now() - started;
-        const ranked = applyRank(response.results);
-        state.results = ranked.results;
-        state.rank = ranked.rank;
+        const deduped = applyDedupe(response.results);
+        state.results = deduped.results;
+        state.dedupe = deduped.dedupe;
         state.loading = false;
         finishSearch(text, options);
       }
@@ -678,6 +699,7 @@ export function createApp(): void {
       pushHistory(text);
       syncUrl();
     }
+    void startAnswer(text);
   }
 
   /* ---------------------------------------------------------------- */
@@ -752,6 +774,7 @@ export function createApp(): void {
   }
 
   async function runCompare(text: string): Promise<void> {
+    resetAnswer();
     const jobs = compareQueries(text, state.filters, CONFIG.comparePresets);
     state.query = text;
     state.built = '';
@@ -788,7 +811,7 @@ export function createApp(): void {
         try {
           const cached = cache.get(cacheKey);
           if (cached) {
-            column.results = applyRank(cached.results).results;
+            column.results = applyDedupe(cached.results).results;
             column.cached = true;
             hits++;
           } else {
@@ -796,7 +819,7 @@ export function createApp(): void {
               api.search(job.query, { count: CONFIG.compareCount, signal: controller.signal }),
             );
             if (response.results.length > 0) cache.set(cacheKey, response);
-            column.results = applyRank(response.results).results;
+            column.results = applyDedupe(response.results).results;
             paid++;
           }
         } catch (error) {
@@ -822,6 +845,169 @@ export function createApp(): void {
   }
 
   /* ---------------------------------------------------------------- */
+  /* answer synthesis                                                  */
+  /* ---------------------------------------------------------------- */
+  let answerController: AbortController | null = null;
+  let answerFrame = 0;
+
+  function scheduleAnswerRender(): void {
+    if (answerFrame) return;
+    answerFrame = window.requestAnimationFrame(() => {
+      answerFrame = 0;
+      renderAnswer();
+    });
+  }
+
+  /** Escape first, then turn [n] into a link that scrolls to source n. */
+  function formatAnswerText(text: string): string {
+    const escaped = escapeHtml(text);
+    const withCitations = escaped.replace(/\[(\d{1,2})\]/g, (match, digits: string) => {
+      const index = Number(digits);
+      const cited = state.answer.citations.includes(index) || index <= state.answer.sources.length;
+      if (!cited || index < 1) return match;
+      return `<a class="cite" href="#result-${index}" data-idx="${index}">${index}</a>`;
+    });
+    return withCitations
+      .split(/\n{2,}/)
+      .map((paragraph) => `<p>${paragraph.replace(/\n/g, '<br>')}</p>`)
+      .join('');
+  }
+
+  function renderAnswer(): void {
+    const answer = state.answer;
+    if (!answer.visible) {
+      el.answer.hidden = true;
+      return;
+    }
+    el.answer.hidden = false;
+    el.answer.classList.toggle('running', answer.running);
+    el.answerStop.hidden = !answer.running;
+
+    if (answer.error) {
+      const { title, hint } = describeAnswerError(answer.error);
+      el.answerBody.innerHTML = `<p class="answer-error">${escapeHtml(title)}</p><p class="answer-hint">${escapeHtml(hint)}</p>`;
+      el.answerMeta.textContent = '';
+      el.answerFoot.replaceChildren();
+      return;
+    }
+
+    const body = formatAnswerText(answer.text);
+    el.answerBody.innerHTML = answer.text
+      ? body
+      : '<p class="answer-placeholder"><span class="spinner"></span>正在阅读来源并组织答案…</p>';
+
+    const meta: string[] = [];
+    if (answer.running) meta.push('生成中…');
+    else if (answer.text) meta.push(`基于 ${answer.sources.length} 条来源`);
+    if (answer.elapsed > 0 && !answer.running) meta.push(fmtDuration(answer.elapsed));
+    if (answer.usage) meta.push(`${answer.usage.promptTokens + answer.usage.completionTokens} tokens`);
+    el.answerMeta.textContent = meta.join(' · ');
+
+    // Source chips: only those the answer actually cited.
+    el.answerFoot.replaceChildren();
+    for (const index of answer.citations) {
+      const source = answer.sources[index - 1];
+      if (!source) continue;
+      const chip = h('a', {
+        class: 'cite-chip',
+        href: source.url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        title: source.title,
+      });
+      chip.appendChild(h('span', { class: 'cite-num', text: String(index) }));
+      chip.appendChild(h('span', { class: 'cite-site', text: source.site_name || hostOf(source.url) }));
+      el.answerFoot.appendChild(chip);
+    }
+    if (answer.citations.length === 0 && answer.text && !answer.running) {
+      el.answerFoot.appendChild(h('span', { class: 'cite-empty', text: '该答案没有标注来源，请以链接结果为准' }));
+    }
+  }
+
+  function describeAnswerError(error: AnswerError): { title: string; hint: string } {
+    switch (error.kind) {
+      case 'auth':
+        return { title: '摘要生成失败：API Key 无效', hint: '搜索结果不受影响；点 ⚙ 换一个 Key。' };
+      case 'payment':
+        return { title: '摘要生成失败：余额不足', hint: '搜索结果不受影响。' };
+      case 'rate':
+        return { title: '摘要生成失败：触发限速', hint: '稍后重试，或关闭 AI 摘要只看链接。' };
+      case 'network':
+      case 'timeout':
+        return { title: '摘要生成失败：网络问题', hint: '搜索结果不受影响。' };
+      default:
+        return { title: '摘要生成失败', hint: error.message };
+    }
+  }
+
+  function resetAnswer(): void {
+    answerController?.abort();
+    answerController = null;
+    if (answerFrame) {
+      window.cancelAnimationFrame(answerFrame);
+      answerFrame = 0;
+    }
+    state.answer = {
+      text: '',
+      sources: [],
+      citations: [],
+      running: false,
+      error: null,
+      usage: null,
+      elapsed: 0,
+      visible: false,
+    };
+    renderAnswer();
+  }
+
+  async function startAnswer(query: string): Promise<void> {
+    resetAnswer();
+    if (!settings.answer || state.mode !== 'single' || state.results.length === 0 || !state.key) return;
+
+    const sources = state.results.slice(0, CONFIG.answerMaxSources);
+    state.answer.sources = sources;
+    state.answer.visible = true;
+    state.answer.running = true;
+    renderAnswer();
+
+    const controller = new AbortController();
+    answerController = controller;
+    const started = performance.now();
+
+    try {
+      const result = await streamAnswer({
+        endpoint: CONFIG.answerEndpoint,
+        apiKey: state.key,
+        model: settings.answerModel || CONFIG.answerModel,
+        messages: buildMessages(query, sources, CONFIG.answerMaxSources),
+        signal: controller.signal,
+        maxTokens: CONFIG.answerMaxTokens,
+        onDelta: (delta) => {
+          state.answer.text += delta;
+          scheduleAnswerRender();
+        },
+      });
+      state.answer.citations = citationIndexes(result.text, sources.length);
+      state.answer.usage = result.usage;
+      state.answer.elapsed = performance.now() - started;
+      state.answer.running = false;
+      renderAnswer();
+    } catch (error) {
+      const answerError = error instanceof AnswerError ? error : new AnswerError('unknown', String(error));
+      if (answerError.kind === 'aborted') {
+        state.answer.running = false;
+        if (!state.answer.text) state.answer.visible = false;
+        renderAnswer();
+        return;
+      }
+      state.answer.error = answerError;
+      state.answer.running = false;
+      state.answer.elapsed = performance.now() - started;
+      renderAnswer();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /* gate / drawer                                                     */
   /* ---------------------------------------------------------------- */
   function showGate(): void {
@@ -838,7 +1024,9 @@ export function createApp(): void {
     el.setSummary.value = settings.summary;
     el.setTheme.value = settings.theme;
     el.setEndpoint.value = settings.endpoint;
-    el.setRerank.value = settings.rerank ? 'on' : 'off';
+    el.setDedupe.value = settings.dedupe ? 'on' : 'off';
+    el.setAnswer.value = settings.answer ? 'on' : 'off';
+    el.setAnswerModel.value = settings.answerModel;
     renderStats();
     el.setPageSize.focus();
   }
@@ -922,6 +1110,51 @@ export function createApp(): void {
     if (mode === 'single' || mode === 'compare') setMode(mode);
   });
 
+  el.answerBody.addEventListener('click', (event) => {
+    const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('.cite');
+    if (!link) return;
+    event.preventDefault();
+    const index = Number(link.dataset.idx);
+    const target = document.getElementById(`result-${index}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('flash');
+    window.setTimeout(() => target.classList.remove('flash'), 1200);
+  });
+
+  el.answerStop.addEventListener('click', () => {
+    answerController?.abort();
+    state.answer.running = false;
+    state.answer.citations = citationIndexes(state.answer.text, state.answer.sources.length);
+    renderAnswer();
+  });
+
+  el.answerHide.addEventListener('click', () => {
+    answerController?.abort();
+    state.answer.visible = false;
+    renderAnswer();
+  });
+
+  el.answerCopy.addEventListener('click', async () => {
+    const ok = await copyText(`${state.answer.text}
+
+来源：${state.query}`);
+    toast(ok ? '摘要已复制' : '复制失败');
+  });
+
+  el.setAnswer.addEventListener('change', () => {
+    settings.answer = el.setAnswer.value === 'on';
+    persistSettings();
+    if (!settings.answer) resetAnswer();
+    else if (el.q.value.trim()) void runSearch({ pushUrl: false });
+  });
+
+  el.setAnswerModel.addEventListener('change', () => {
+    settings.answerModel = el.setAnswerModel.value.trim();
+    persistSettings();
+    toast(settings.answerModel ? `摘要模型：${settings.answerModel}` : '已恢复默认摘要模型');
+  });
+
   el.settingsBtn.addEventListener('click', openDrawer);
   must<HTMLButtonElement>('#drawer-close').addEventListener('click', closeDrawer);
   el.scrim.addEventListener('click', closeDrawer);
@@ -949,11 +1182,11 @@ export function createApp(): void {
     applyTheme();
   });
 
-  el.setRerank.addEventListener('change', () => {
-    settings.rerank = el.setRerank.value === 'on';
+  el.setDedupe.addEventListener('change', () => {
+    settings.dedupe = el.setDedupe.value === 'on';
     persistSettings();
     if (el.q.value.trim()) void runSearch({ pushUrl: false });
-    else toast(settings.rerank ? '已开启重排与去重' : '已关闭，显示原始排序');
+    else toast(settings.dedupe ? '已开启合并重复' : '已关闭，显示原始结果');
   });
 
   el.setEndpoint.addEventListener('change', () => {
@@ -1024,7 +1257,9 @@ export function createApp(): void {
   el.setSummary.value = settings.summary;
   el.setTheme.value = settings.theme;
   el.setEndpoint.value = settings.endpoint;
-  el.setRerank.value = settings.rerank ? 'on' : 'off';
+  el.setDedupe.value = settings.dedupe ? 'on' : 'off';
+  el.setAnswer.value = settings.answer ? 'on' : 'off';
+  el.setAnswerModel.value = settings.answerModel;
   document.title = `${CONFIG.brand} · 一个搜索壳子`;
   renderHistory();
   renderStats();

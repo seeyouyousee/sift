@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rankResults, titleIdentity, urlIdentity } from '../src/core/rank.js';
+import { dedupeResults, titleIdentity, urlIdentity } from '../src/core/dedupe.js';
 import type { SearchResult } from '../src/core/types.js';
 
 let seq = 0;
@@ -19,8 +19,6 @@ function make(partial: Partial<SearchResult> = {}): SearchResult {
     ...partial,
   };
 }
-
-const now = () => new Date('2026-10-19T00:00:00Z').getTime();
 
 describe('urlIdentity', () => {
   it('collapses locale-prefixed clones of the same page', () => {
@@ -53,7 +51,7 @@ describe('titleIdentity', () => {
   });
 });
 
-describe('rankResults', () => {
+describe('dedupeResults', () => {
   it('drops locale clones and reports it', () => {
     const base = 'https://aspose.com';
     const input = [
@@ -61,17 +59,17 @@ describe('rankResults', () => {
       make({ url: `${base}/ko/x`, title: 'B' }),
       make({ url: `${base}/x`, title: 'C' }),
     ];
-    const { results, stats } = rankResults(input, { now });
+    const { results, stats } = dedupeResults(input);
     expect(results).toHaveLength(1);
     expect(stats.duplicateUrl).toBe(2);
   });
 
-  it('drops an exact duplicate title from a different host', () => {
+  it('drops an exact duplicate title from another host', () => {
     const input = [
       make({ url: 'https://a.com/1', title: 'Same Title' }),
       make({ url: 'https://b.com/2', title: 'same   title!' }),
     ];
-    const { results, stats } = rankResults(input, { now });
+    const { results, stats } = dedupeResults(input);
     expect(results).toHaveLength(1);
     expect(stats.duplicateTitle).toBe(1);
   });
@@ -82,73 +80,45 @@ describe('rankResults', () => {
       make({ url: 'https://sub.farm.example/2', title: 'b' }),
       make({ url: 'https://good.com/3', title: 'c' }),
     ];
-    const { results, stats } = rankResults(input, { blocklist: ['farm.example'], now });
+    const { results, stats } = dedupeResults(input, { blocklist: ['farm.example'] });
     expect(results).toHaveLength(1);
     expect(stats.blocklisted).toBe(2);
   });
 
-  it('demotes the third hit of a domain instead of deleting it', () => {
+  it('never reorders what survives', () => {
     const input = [
-      make({ url: 'https://dup.com/1', title: 'one', rerank_score: 2.9 }),
-      make({ url: 'https://dup.com/2', title: 'two', rerank_score: 2.8 }),
-      make({ url: 'https://dup.com/3', title: 'three', rerank_score: 2.7 }),
-      make({ url: 'https://other.com/4', title: 'four', rerank_score: 1.0 }),
+      make({ url: 'https://a.com/1', title: 'one' }),
+      make({ url: 'https://b.com/2', title: 'two' }),
+      make({ url: 'https://a.com/3', title: 'three' }),
     ];
-    const { results, stats } = rankResults(input, { now, maxPerDomain: 2 });
-    expect(results).toHaveLength(4);
-    expect(stats.demoted).toBe(1);
-    expect(results.map((r) => r.title)).toEqual(['one', 'two', 'four', 'three']);
+    expect(dedupeResults(input).results.map((r) => r.title)).toEqual(['one', 'two', 'three']);
   });
 
-  it('sorts by relevance, authority and recency', () => {
-    const input = [
-      make({ url: 'https://a.com/1', title: 'a', rerank_score: 1.0, authority: 1 }),
-      make({ url: 'https://b.com/2', title: 'b', rerank_score: 2.9, authority: 4 }),
-      make({ url: 'https://c.com/3', title: 'c', rerank_score: 2.0, authority: 2 }),
-    ];
-    const { results } = rankResults(input, { now });
-    expect(results.map((r) => r.title)).toEqual(['b', 'c', 'a']);
-  });
-
-  it('prefers fresher pages when everything else ties', () => {
-    const input = [
-      make({ url: 'https://old.com/1', title: 'old', date: '2024-01-01T00:00:00Z' }),
-      make({ url: 'https://new.com/2', title: 'new', date: '2026-10-18T00:00:00Z' }),
-    ];
-    const { results } = rankResults(input, { now });
-    expect(results[0]?.title).toBe('new');
-  });
-
-  it('is stable for identical scores', () => {
-    const input = [
-      make({ url: 'https://a.com/1', title: 'first' }),
-      make({ url: 'https://b.com/2', title: 'second' }),
-    ];
-    expect(rankResults(input, { now }).results.map((r) => r.title)).toEqual(['first', 'second']);
-  });
-
-  it('leaves the list untouched when maxPerDomain is 0', () => {
+  it('keeps multiple hits from one host (no domain cap)', () => {
     const input = [
       make({ url: 'https://dup.com/1', title: 'one' }),
       make({ url: 'https://dup.com/2', title: 'two' }),
       make({ url: 'https://dup.com/3', title: 'three' }),
     ];
-    const { results, stats } = rankResults(input, { now, maxPerDomain: 0 });
-    expect(results).toHaveLength(3);
-    expect(stats.demoted).toBe(0);
+    expect(dedupeResults(input).results).toHaveLength(3);
   });
 
-  it('does not mutate the input or the result objects', () => {
+  it('does not mutate the input', () => {
     const input = [make({ title: 'x' })];
     const snapshot = JSON.stringify(input);
-    rankResults(input, { now });
+    dedupeResults(input);
     expect(JSON.stringify(input)).toBe(snapshot);
   });
 
   it('handles an empty list', () => {
-    expect(rankResults([], { now })).toEqual({
+    expect(dedupeResults([])).toEqual({
       results: [],
-      stats: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0, demoted: 0 },
+      stats: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0 },
     });
+  });
+
+  it('ignores an empty blocklist', () => {
+    const input = [make({ url: 'https://a.com/1' }), make({ url: 'https://b.com/2' })];
+    expect(dedupeResults(input, { blocklist: [] }).results).toHaveLength(2);
   });
 });

@@ -7,6 +7,12 @@ export const CONFIG = {
   brand: 'Sift',
   tagline: '带自己的 key，搜自己的网',
 
+  /** Answer synthesis (a second, optional call). */
+  answerEndpoint: 'https://api.deepseek.com/chat/completions',
+  answerModel: 'deepseek-chat',
+  answerMaxSources: 8,
+  answerMaxTokens: 600,
+
   /** DeepSeek Search & Fetch endpoints (see docs.deepseek.com). */
   searchEndpoint: 'https://api.deepseek.com/v1/tools/search',
   fetchEndpoint: 'https://api.deepseek.com/v1/tools/fetch',
@@ -29,9 +35,8 @@ export const CONFIG = {
     { id: 'bilibili', label: 'B 站', site: 'bilibili.com' },
   ],
 
-  /** Local re-ranking (src/core/rank.ts). maxPerDomain: 0 disables the cap. */
-  rankMaxPerDomain: 2,
-  rankBlocklist: [] as string[],
+  /** Local dedupe (src/core/dedupe.ts). Empty blocklist: opinion stays opt-in. */
+  dedupeBlocklist: [] as string[],
 
   /** Client-side cache. Empty result sets are never cached. */
   cacheTtlMs: 10 * 60 * 1000,
