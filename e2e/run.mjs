@@ -170,6 +170,9 @@ const STUB = () => {
     }
 
     if (String(url).includes('/tools/fetch')) {
+      if (String(body.url ?? '').includes('failfetch')) {
+        return json({ error: { message: 'failed to fetch URL' } }, 404);
+      }
       return json({ title: 'Fetched page', content: '# 正文\n\n这是抓取到的正文。' });
     }
     if (String(body.query ?? '').includes('FAIL401')) {
@@ -177,6 +180,23 @@ const STUB = () => {
     }
 
     const query = String(body.query ?? '');
+
+    if (query.includes('FAILFETCH')) {
+      return json({
+        results: Array.from({ length: 2 }, (_, i) => ({
+          title: `抓取失败样例 ${i + 1}`,
+          url: `https://failfetch.example.com/${i + 1}`,
+          snippet: 's',
+          summary: 's',
+          content: '',
+          site_name: 'Blocked',
+          site_icon: null,
+          date: '2026-10-01T00:00:00+00:00',
+          authority: 2,
+          rerank_score: 2,
+        })),
+      });
+    }
 
     // Three locale clones of one page + two distinct pages: exercises dedupe.
     if (query.includes('DUPTEST')) {
@@ -453,6 +473,24 @@ try {
     record(
       '正文请求打到 fetch 端点',
       await cdp.evaluate(`window.__calls.some((c) => c.url.includes('/tools/fetch'))`),
+    );
+  }
+
+  // --- unreadable page: inline error, not a silent toast ------------------
+  if (!LIVE) {
+    await cdp.evaluate(`
+      (() => {
+        const q = document.querySelector('#q');
+        q.value = 'FAILFETCH';
+        document.querySelector('#search-form').requestSubmit();
+      })()
+    `);
+    await waitFor(cdp.evaluate, `document.querySelectorAll('#results .result').length === 2`, 8000, 'fetch fixture');
+    await cdp.evaluate(`document.querySelector('#results .result .link-btn').click()`);
+    await waitFor(cdp.evaluate, `!!document.querySelector('.read-panel.read-error')`, 8000, 'read error panel');
+    record(
+      '抓不到正文时行内给出原因',
+      /在新标签打开原链接/.test(await cdp.evaluate(`document.querySelector('.read-panel.read-error').innerText`)),
     );
   }
 

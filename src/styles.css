@@ -397,6 +397,11 @@ main { max-width: 880px; margin: 0 auto; padding: 0 20px 90px; }
   font-family: inherit;
 }
 
+.read-panel.read-error .read-body p { margin: 0 0 10px; color: var(--fg-dim); }
+.read-actions { display: flex; gap: 10px; align-items: center; }
+.read-actions .link-btn { border: 1px solid var(--line); padding: 3px 10px; }
+.read-actions a.link-btn { text-decoration: none; }
+
 .pager { display: flex; gap: 8px; justify-content: center; margin-top: 28px; flex-wrap: wrap; }
 
 /* ---------- compare mode ---------- */

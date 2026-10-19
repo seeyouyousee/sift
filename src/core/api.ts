@@ -62,7 +62,18 @@ export class SearchApi {
 
   /** Fetch one page as Markdown text. */
   async fetchPage(url: string, options: RequestOptions = {}): Promise<FetchResponse> {
-    const data = await this.request('fetch', this.opts.fetchEndpoint, { url }, options.signal);
+    let data: Record<string, unknown>;
+    try {
+      data = await this.request('fetch', this.opts.fetchEndpoint, { url }, options.signal);
+    } catch (error) {
+      // 404 from /tools/fetch means "no extractable content", which is a very
+      // different problem from a malformed request: the page is blocked,
+      // paywalled, JS-only, or unreachable by the crawler.
+      if (error instanceof ApiError && error.status === 404) {
+        throw new ApiError('unfetchable', error.message, 404);
+      }
+      throw error;
+    }
     if (!data || typeof data.content !== 'string') {
       throw new ApiError('server', '返回体缺少 content 字段');
     }

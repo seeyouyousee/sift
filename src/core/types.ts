@@ -36,6 +36,8 @@ export type ApiErrorKind =
   | 'network'
   | 'server'
   | 'bad-request'
+  /** The fetch endpoint could not extract the page (404): blocked, paywalled, JS-only. */
+  | 'unfetchable'
   | 'unknown';
 
 export class ApiError extends Error {

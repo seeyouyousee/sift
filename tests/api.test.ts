@@ -114,9 +114,9 @@ describe('SearchApi.fetchPage', () => {
     expect(JSON.parse(String(init.body))).toEqual({ url: 'https://a' });
   });
 
-  it('maps 404 to bad-request', async () => {
-    const fetchImpl = async () => json({ error: { message: 'no content' } }, 404);
-    await expect(client(fetchImpl as never).fetchPage('https://a')).rejects.toMatchObject({ kind: 'bad-request' });
+  it('maps 404 to unfetchable (page blocked or unparseable)', async () => {
+    const fetchImpl = async () => json({ error: { message: 'failed to fetch URL' } }, 404);
+    await expect(client(fetchImpl as never).fetchPage('https://a')).rejects.toMatchObject({ kind: 'unfetchable', status: 404 });
   });
 
   it('rejects a payload without content', async () => {

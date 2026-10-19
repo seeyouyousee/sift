@@ -367,6 +367,11 @@ export function createApp(): void {
         return { title: '服务端错误', hint: '已自动重试仍失败，稍后再试。' };
       case 'bad-request':
         return { title: '请求不合法', hint: error.message };
+      case 'unfetchable':
+        return {
+          title: '抓不到正文',
+          hint: '浏览器也打不开，说明是网络层就访问不到（被墙 / DNS 被污染 / 站点屏蔽了此地）；也可能需要登录或做了反爬。正文抓取失败不影响上面的搜索结果。',
+        };
       case 'aborted':
         return { title: '已取消', hint: '' };
       default:
@@ -483,7 +488,42 @@ export function createApp(): void {
       button.textContent = '已展开';
     } catch (error) {
       const err = toApiError(error);
-      toast(`抓取失败：${describeError(err).title}`);
+      const { title, hint } = describeError(err);
+
+      const panel = h('div', { class: 'read-panel read-error' });
+      const head = h('div', { class: 'read-head' });
+      head.appendChild(h('span', { text: `无法抓取正文 · ${title}` }));
+      const close = h('button', { class: 'link-btn', type: 'button', text: '收起' });
+      close.addEventListener('click', () => {
+        panel.remove();
+        button.textContent = '阅读正文';
+      });
+      head.appendChild(close);
+      panel.appendChild(head);
+
+      const body = h('div', { class: 'read-body' });
+      body.appendChild(h('p', { text: hint }));
+      const actions = h('div', { class: 'read-actions' });
+      actions.appendChild(
+        h('a', {
+          class: 'link-btn',
+          href: result.url,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          text: '在新标签打开原链接',
+        }),
+      );
+      const retry = h('button', { class: 'link-btn', type: 'button', text: '重试' });
+      retry.addEventListener('click', () => {
+        panel.remove();
+        button.textContent = '阅读正文';
+        void toggleRead(host, result, button);
+      });
+      actions.appendChild(retry);
+      body.appendChild(actions);
+      panel.appendChild(body);
+      host.appendChild(panel);
+
       button.textContent = '阅读正文';
     } finally {
       (button as HTMLButtonElement).disabled = false;

@@ -86,7 +86,8 @@ BYOK 让「谁用谁付费」成为架构约束而不是运营策略。
 | `timeout` | 25s 超时 | 网络不稳定 | 是 |
 | `network` | fetch 抛错 | 检查网络/代理 | 是 |
 | `server` | 5xx、非法 JSON、缺字段 | 服务端错误 | 是 |
-| `bad-request` | 400 / 404 | 请求不合法 | 否 |
+| `bad-request` | 400（搜索） | 请求不合法 | 否 |
+| `unfetchable` | 404（抓取正文） | 站点阻断/需登录/反爬，行内给出「打开原链接」 | 否 |
 | `aborted` | 新搜索取消旧搜索 | 静默丢弃 | — |
 
 重试策略：`600ms × 2^n + jitter(0–300ms)`，最多 2 次；只有 `rate/server/network` 参与重试。
