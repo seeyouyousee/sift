@@ -35,6 +35,10 @@ export const CONFIG = {
     { id: 'bilibili', label: 'B 站', site: 'bilibili.com' },
   ],
 
+  /** Smart retrieval: planned queries per question, and planner cost estimate. */
+  smartCount: 8,
+  pricePerPlan: 0.003,
+
   /** Second, source-restricted query for "where do I download this" intent. */
   officialCount: 10,
 

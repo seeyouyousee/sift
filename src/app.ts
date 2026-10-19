@@ -21,7 +21,16 @@ import {
 } from './core/query.js';
 import { compareQueries, type ComparePreset } from './core/compare.js';
 import { dedupeResults, type DedupeStats } from './core/dedupe.js';
-import { AnswerError, buildMessages, citationIndexes, streamAnswer, type AnswerUsage } from './core/answer.js';
+import {
+  AnswerError,
+  buildMessages,
+  citationIndexes,
+  completeChat,
+  streamAnswer,
+  type AnswerUsage,
+} from './core/answer.js';
+import { collectEvidence } from './core/agent.js';
+import { buildPlannerMessages, parsePlan, type PlannerPlan } from './core/planner.js';
 import {
   extractOfficialSources,
   hasDownloadIntent,
@@ -56,12 +65,14 @@ interface Settings {
   dedupe: boolean;
   answer: boolean;
   answerModel: string;
+  smart: boolean;
 }
 
 interface SessionStats {
   searches: number;
   cacheHits: number;
   spend: number;
+  plans: number;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -73,6 +84,7 @@ const DEFAULT_SETTINGS: Settings = {
   dedupe: true,
   answer: true,
   answerModel: '',
+  smart: false,
 };
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +114,10 @@ export function createApp(): void {
     columns: [] as ColumnState[],
     dedupe: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0 } as DedupeStats,
     official: [] as OfficialSource[],
+    plan: null as PlannerPlan | null,
+    planGroups: [] as Array<{ query: string; why: string; count: number }>,
+    cost: 0,
+    smartFallback: false,
     answer: {
       text: '',
       sources: [] as SearchResult[],
@@ -114,7 +130,7 @@ export function createApp(): void {
     },
   };
 
-  const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0 };
+  const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0, plans: 0 };
   const pageCache = new Map<string, FetchResponse>();
   const cache = new TtlLru<string, SearchResponse>({
     ttlMs: CONFIG.cacheTtlMs,
@@ -179,6 +195,10 @@ export function createApp(): void {
     answerHide: must<HTMLButtonElement>('#answer-hide'),
     setAnswer: must<HTMLSelectElement>('#set-answer'),
     setAnswerModel: must<HTMLInputElement>('#set-answer-model'),
+    plan: must<HTMLElement>('#plan'),
+    planIntent: must<HTMLElement>('#plan-intent'),
+    planQueries: must<HTMLElement>('#plan-queries'),
+    setSmart: must<HTMLSelectElement>('#set-smart'),
     official: must<HTMLElement>('#official'),
     officialList: must<HTMLElement>('#official-list'),
   };
@@ -346,9 +366,10 @@ export function createApp(): void {
       `<span class="sep">·</span>第 ${from}–${to} 条` +
       `<span class="sep">·</span>共 ${pages} 页` +
       `<span class="sep">·</span>${fmtDuration(state.elapsed)}` +
-      (state.cached
-        ? `<span class="sep">·</span><span class="ok">缓存命中，未计费</span>`
-        : `<span class="sep">·</span>本次 ${fmtMoney(CONFIG.pricePerSuccessfulSearch)}`) +
+      (state.cost > 0
+        ? `<span class="sep">·</span>本次 ${fmtMoney(state.cost)}`
+        : `<span class="sep">·</span><span class="ok">缓存命中，未计费</span>`) +
+      (state.plan ? `<span class="sep">·</span><span class="muted">${state.plan.action === 'repos' ? '链接型' : '问答型'} · ${state.plan.queries.length} 路</span>` : '') +
       dedupeNote(state.dedupe);
   }
 
@@ -593,7 +614,7 @@ export function createApp(): void {
   function renderStats(): void {
     const cacheStats = cache.stats;
     const lines = [
-      `本次会话：${stats.searches} 次真实请求 · ${stats.cacheHits} 次缓存命中 · 约 ${fmtMoney(stats.spend)}`,
+      `本次会话：${stats.searches} 次检索 · ${stats.plans} 次规划 · ${stats.cacheHits} 次缓存命中 · 约 ${fmtMoney(stats.spend)}`,
       `缓存：${cacheStats.size} 条 · TTL ${Math.round(CONFIG.cacheTtlMs / 60000)} 分钟`,
       `存储：${backend ? 'localStorage（持久）' : '内存（刷新即失效）'}`,
       `队列：${bucket.queued} 个请求在等待令牌`,
@@ -656,6 +677,8 @@ export function createApp(): void {
   /* search                                                            */
   /* ---------------------------------------------------------------- */
   let inflightController: AbortController | null = null;
+  /** Bumped on every new search; stale runs must not touch shared state. */
+  let runSeq = 0;
 
   async function runSearch(options: { pushUrl?: boolean } = {}): Promise<void> {
     const text = el.q.value.trim();
@@ -680,6 +703,19 @@ export function createApp(): void {
       return;
     }
 
+    // Planning only pays for itself on link-type intent. On a 12-question A/B
+    // set it scored 5:7 against single-pass retrieval for prose answers, so it
+    // is not allowed to touch them.
+    if (settings.smart && hasDownloadIntent(text)) {
+      await runSmart(text, options);
+      return;
+    }
+
+    await runClassic(text, options);
+  }
+
+  async function runClassic(text: string, options: { pushUrl?: boolean } = {}): Promise<void> {
+    runSeq += 1;
     const built = buildQuery(text, state.filters);
     state.query = text;
     state.built = built;
@@ -700,6 +736,10 @@ export function createApp(): void {
 
     const cacheKey = `${built}|${CONFIG.maxCount}`;
     const started = performance.now();
+    state.plan = null;
+    state.planGroups = [];
+    state.smartFallback = false;
+    renderPlan();
 
     if (hasDownloadIntent(built)) void fetchOfficial(text);
 
@@ -708,6 +748,7 @@ export function createApp(): void {
       if (cached) {
         stats.cacheHits++;
         state.cached = true;
+        state.cost = 0;
         state.elapsed = performance.now() - started;
         const deduped = applyDedupe(cached.results);
         state.results = deduped.results;
@@ -723,6 +764,7 @@ export function createApp(): void {
         stats.searches++;
         stats.spend += CONFIG.pricePerSuccessfulSearch;
         state.cached = false;
+        state.cost = CONFIG.pricePerSuccessfulSearch;
         state.elapsed = performance.now() - started;
         const deduped = applyDedupe(response.results);
         state.results = deduped.results;
@@ -742,7 +784,7 @@ export function createApp(): void {
     }
   }
 
-  function finishSearch(text: string, options: { pushUrl?: boolean }): void {
+  function finishSearch(text: string, options: { pushUrl?: boolean }, skipAnswer = false): void {
     if (state.results.length === 0) el.empty.hidden = false;
     mergeOfficial(extractOfficialSources(state.results));
     renderResults();
@@ -753,7 +795,7 @@ export function createApp(): void {
       pushHistory(text);
       syncUrl();
     }
-    void startAnswer(text);
+    if (!skipAnswer) void startAnswer(text);
   }
 
   /* ---------------------------------------------------------------- */
@@ -1063,6 +1105,139 @@ export function createApp(): void {
   }
 
   /* ---------------------------------------------------------------- */
+  /* smart retrieval (plan → collect → answer)                         */
+  /* ---------------------------------------------------------------- */
+  function renderPlan(): void {
+    if (!state.plan) {
+      el.plan.hidden = true;
+      el.planQueries.replaceChildren();
+      return;
+    }
+    el.plan.hidden = false;
+    el.planIntent.textContent = state.plan.intent;
+    el.planQueries.replaceChildren();
+    for (const item of state.planGroups) {
+      const chip = h('span', { class: 'plan-q' });
+      chip.appendChild(h('span', { class: 'plan-q-text', text: item.query }));
+      chip.appendChild(h('span', { class: 'plan-q-count', text: String(item.count) }));
+      chip.title = item.why;
+      el.planQueries.appendChild(chip);
+    }
+  }
+
+  async function planQuestion(question: string, signal: AbortSignal): Promise<PlannerPlan | null> {
+    const { text } = await completeChat({
+      endpoint: CONFIG.answerEndpoint,
+      apiKey: state.key,
+      model: settings.answerModel || CONFIG.answerModel,
+      messages: buildPlannerMessages(question),
+      signal,
+      maxTokens: 400,
+      temperature: 0.1,
+    });
+    return parsePlan(text);
+  }
+
+  async function runSmart(text: string, options: { pushUrl?: boolean } = {}): Promise<void> {
+    const runId = ++runSeq;
+    state.query = text;
+    state.built = '';
+    state.error = null;
+    state.loading = true;
+    state.page = 1;
+    state.results = [];
+    state.plan = null;
+    state.planGroups = [];
+    state.cost = 0;
+    state.smartFallback = false;
+    el.empty.hidden = true;
+    clear(el.results);
+    clear(el.pager);
+    resetAnswer();
+    resetOfficial();
+    renderPlan();
+    el.status.className = 'status loading';
+    el.status.innerHTML = '<span class="spinner" aria-hidden="true"></span>正在理解问题…';
+
+    inflightController?.abort();
+    const controller = new AbortController();
+    inflightController = controller;
+    const started = performance.now();
+
+    let plan: PlannerPlan | null = null;
+    try {
+      plan = await planQuestion(text, controller.signal);
+    } catch {
+      plan = null;
+    }
+
+    if (!plan) {
+      // Superseded by a newer search: stop quietly instead of falling back and
+      // aborting that newer run.
+      if (runId !== runSeq) return;
+      state.smartFallback = true;
+      state.loading = false;
+      toast('意图规划失败，已回退单轮检索');
+      await runClassic(text, options);
+      return;
+    }
+
+    if (runId !== runSeq) return;
+
+    // The planner only earns its keep when the answer *is* a list of links.
+    if (plan.action !== 'repos') {
+      await runClassic(text, options);
+      return;
+    }
+
+    state.plan = plan;
+    stats.plans += 1;
+    state.cost += CONFIG.pricePerPlan;
+    state.planGroups = plan.queries.map((item) => ({ query: item.q, why: item.why, count: 0 }));
+    renderPlan();
+    el.status.className = 'status loading';
+    el.status.innerHTML = `<span class="spinner" aria-hidden="true"></span>检索中（${plan.queries.length} 路）…`;
+
+    try {
+      const { groups, evidence } = await collectEvidence(
+        plan,
+        {
+          search: async (query, count) =>
+            (await api.search(query, { count, signal: controller.signal })).results,
+        },
+        CONFIG.smartCount,
+      );
+
+      if (runId !== runSeq) return;
+      state.planGroups = groups.map((group) => ({ query: group.query, why: group.why, count: group.results.length }));
+      const searched = groups.filter((group) => group.results.length > 0).length;
+      stats.searches += searched;
+      state.cost += searched * CONFIG.pricePerSuccessfulSearch;
+
+      const deduped = applyDedupe(evidence);
+      state.results = deduped.results;
+      state.dedupe = deduped.dedupe;
+      state.loading = false;
+      state.cached = false;
+      state.elapsed = performance.now() - started;
+      stats.spend += state.cost;
+      renderPlan();
+
+      // "Where do I download this" wants links, not prose.
+      const skipAnswer = plan.action === 'repos';
+      finishSearch(text, options, skipAnswer);
+      if (skipAnswer) mergeOfficial(extractOfficialSources(state.results));
+    } catch (error) {
+      const apiError = toApiError(error);
+      state.loading = false;
+      if (apiError.kind === 'aborted' || runId !== runSeq) return;
+      state.error = apiError;
+      renderStatus();
+      renderStats();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /* official sources ("where do I actually download this")            */
   /* ---------------------------------------------------------------- */
   let officialController: AbortController | null = null;
@@ -1149,6 +1324,7 @@ export function createApp(): void {
     el.setDedupe.value = settings.dedupe ? 'on' : 'off';
     el.setAnswer.value = settings.answer ? 'on' : 'off';
     el.setAnswerModel.value = settings.answerModel;
+    el.setSmart.value = settings.smart ? 'on' : 'off';
     renderStats();
     el.setPageSize.focus();
   }
@@ -1262,6 +1438,13 @@ export function createApp(): void {
 
 来源：${state.query}`);
     toast(ok ? '摘要已复制' : '复制失败');
+  });
+
+  el.setSmart.addEventListener('change', () => {
+    settings.smart = el.setSmart.value === 'on';
+    persistSettings();
+    toast(settings.smart ? '已开启智能检索（先规划，再检索）' : '已关闭智能检索');
+    if (el.q.value.trim()) void runSearch({ pushUrl: false });
   });
 
   el.setAnswer.addEventListener('change', () => {
@@ -1382,6 +1565,7 @@ export function createApp(): void {
   el.setDedupe.value = settings.dedupe ? 'on' : 'off';
   el.setAnswer.value = settings.answer ? 'on' : 'off';
   el.setAnswerModel.value = settings.answerModel;
+  el.setSmart.value = settings.smart ? 'on' : 'off';
   document.title = `${CONFIG.brand} · 一个搜索壳子`;
   renderHistory();
   renderStats();

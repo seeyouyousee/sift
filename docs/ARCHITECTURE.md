@@ -13,7 +13,7 @@
 │ core/*                纯函数，零 DOM，全部可单测      │
 │   api ← limiter ← retry                              │
 │   cache · singleflight · compare · dedupe · source   │
-│   answer                                              │
+│   answer · planner · agent                            │
 │   query · highlight · format · storage · types       │
 └─────────────────────────────────────────────────────┘
 ```
@@ -114,6 +114,22 @@ BYOK 让「谁用谁付费」成为架构约束而不是运营策略。
 - **保留全部域名多样性**：不做同域数量限制，也不重排。顺序是接口的判断，客户端没有
   更强的依据（见下面「被删掉的东西」）。
 - 提供 `dedupeBlocklist` 但默认空：屏蔽某个站点是价值判断，应该由部署者决定。
+
+## 规划与召回（planner.ts · agent.ts）
+
+`planner.ts` 把问题转成封闭 JSON（`intent` / `action` / `entities` / `queries`），
+解析失败返回 null 让调用方回退；`agent.ts` 用 RRF 融合多路结果：
+
+```
+score(doc) = Σ 1/(60 + rank_in_query)
+```
+
+比"交错拼接"好在：被多条检索式同时命中的页面会自动上浮，而只被一条窄查询命中的页面不会因为
+恰好排第一就压过别人。
+
+**但它被限制在 repos 意图上。** A/B 盲评（12 题）显示完整版 5:7 落后于单轮检索，
+原因写在 README。保留它是因为「下载地址」这类问题单轮检索在原理上做不对——不是分数问题，
+是目标函数问题：新闻页文本密度高，仓库页只有文件名列表。
 
 ## 官方源（source.ts）
 

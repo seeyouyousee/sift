@@ -574,6 +574,41 @@ body[data-mode='compare'] .foot { max-width: 1200px; }
 }
 
 /* ==========================================================================
+   Retrieval plan
+   ========================================================================== */
+.plan {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  font-size: 12.5px;
+}
+.plan-row { display: flex; gap: 10px; align-items: baseline; }
+.plan-label { color: var(--fg-faint); white-space: nowrap; }
+.plan-intent { color: var(--fg); }
+.plan-queries { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.plan-q {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg-dim);
+  max-width: 100%;
+}
+.plan-q-text { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-q-count {
+  font-size: 10.5px;
+  background: var(--accent-soft);
+  color: var(--link);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+/* ==========================================================================
    Official source strip
    ========================================================================== */
 .official {

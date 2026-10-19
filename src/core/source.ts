@@ -35,6 +35,8 @@ const NON_REPO_SEGMENTS = new Set([
   'login',
   'join',
   'organizations',
+  'buckets',
+  'spaces',
   'models',
   'tasks',
   'search',
@@ -96,20 +98,33 @@ export function repoOf(url: string): OfficialSource | null {
   return { host, repo: `${owner}/${repo}`, url: urlOut };
 }
 
-/** Unique repository roots from a result page, in appearance order. */
+/** Owners whose repositories are the canonical ones we want to surface first. */
+const PREFERRED_OWNERS = new Set(['deepseek-ai', 'deepseek']);
+
+/**
+ * Unique repository roots, official owners first.
+ *
+ * Aggregate result pages are full of community quantisations and mirrors
+ * (`unsloth/...`, `QuantTrio/...`). They are useful, but a question like
+ * "where do I download DeepSeek" must see `deepseek-ai/...` first, or the answer
+ * becomes a list of strangers' forks.
+ */
 export function extractOfficialSources(results: ReadonlyArray<{ url: string }>, limit = 6): OfficialSource[] {
   const seen = new Set<string>();
-  const out: OfficialSource[] = [];
+  const preferred: OfficialSource[] = [];
+  const others: OfficialSource[] = [];
+
   for (const result of results) {
     const repo = repoOf(result.url);
     if (!repo) continue;
     const key = `${repo.host}/${repo.repo}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(repo);
-    if (out.length >= limit) break;
+    const owner = repo.repo.split('/')[0]?.toLowerCase() ?? '';
+    (PREFERRED_OWNERS.has(owner) ? preferred : others).push(repo);
   }
-  return out;
+
+  return [...preferred, ...others].slice(0, limit);
 }
 
 /** The restricted follow-up query used to find those pages. */

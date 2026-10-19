@@ -117,6 +117,14 @@
         <div class="answer-foot" id="answer-foot"></div>
       </section>
 
+      <section class="plan" id="plan" hidden aria-label="检索计划">
+        <div class="plan-row">
+          <span class="plan-label">意图</span>
+          <span class="plan-intent" id="plan-intent"></span>
+        </div>
+        <div class="plan-queries" id="plan-queries"></div>
+      </section>
+
       <section class="official" id="official" hidden aria-label="官方源">
         <span class="official-label">官方源</span>
         <div class="official-list" id="official-list"></div>
@@ -167,6 +175,14 @@
             <option value="auto">跟随系统</option>
             <option value="dark">深色</option>
             <option value="light">浅色</option>
+          </select>
+        </label>
+
+        <label class="row">
+          <span>下载意图直达</span>
+          <select id="set-smart">
+            <option value="off">关闭（单轮检索）</option>
+            <option value="on">开启（模型规划检索式）</option>
           </select>
         </label>
 

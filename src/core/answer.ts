@@ -127,6 +127,59 @@ function mapStatus(status: number, message: string): AnswerError {
   return new AnswerError('unknown', message || `HTTP ${status}`, status);
 }
 
+/** One non-streaming chat call (used by the planner). */
+export async function completeChat(options: {
+  endpoint: string;
+  apiKey: string;
+  model: string;
+  messages: ChatMessage[];
+  signal?: AbortSignal;
+  maxTokens?: number;
+  temperature?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<{ text: string; usage: AnswerUsage | null }> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  if (!options.apiKey) throw new AnswerError('auth', '尚未设置 API Key');
+
+  const response = await fetchImpl(options.endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.apiKey}` },
+    body: JSON.stringify({
+      model: options.model,
+      messages: options.messages,
+      temperature: options.temperature ?? 0.1,
+      max_tokens: options.maxTokens ?? 400,
+    }),
+    signal: options.signal,
+  }).catch((error: unknown) => {
+    if (options.signal?.aborted) throw new AnswerError('aborted', '已取消');
+    throw new AnswerError('network', `网络错误：${error instanceof Error ? error.message : String(error)}`);
+  });
+
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { error?: { message?: string } };
+      if (payload?.error?.message) message = payload.error.message;
+    } catch {
+      /* non-JSON */
+    }
+    throw mapStatus(response.status, message);
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+  };
+  return {
+    text: data.choices?.[0]?.message?.content ?? '',
+    usage:
+      data.usage && typeof data.usage.prompt_tokens === 'number'
+        ? { promptTokens: data.usage.prompt_tokens ?? 0, completionTokens: data.usage.completion_tokens ?? 0 }
+        : null,
+  };
+}
+
 /** Stream one answer; resolves with the full text once the stream ends. */
 export async function streamAnswer(options: StreamAnswerOptions): Promise<StreamAnswerResult> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);

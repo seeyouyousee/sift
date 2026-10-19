@@ -34,6 +34,7 @@ npm run e2e:live   # 真的调线上接口（需要 DEEPSEEK_API_KEY，约 ¥0.0
 | **多站对比** | 一次查询拆成「知乎 / GitHub / 微博 / B 站」四栏并排，每栏独立缓存、独立计费 |
 | 搜索语法 | `site:` `-site:` `-词` `"短语"` `lang:` `after:` `before:` 原样透传 |
 | 筛选条 | 站点 / 排除站点 / 语言 / 时间（一天、一周、一月、一年），自动拼成操作符 |
+| **意图规划（仅下载意图）** | 模型把问题拆成 1–3 条检索式，只对「找下载/仓库」生效；其余问题仍走单轮检索 |
 | **官方源直达** | 查询含「下载/权重/模型文件」等意图时，自动补一次限定 `site:huggingface.co OR site:modelscope.cn` 的召回，把新闻里的链接换成仓库页 |
 | **AI 摘要** | 取前 8 条摘要，模型流式合成一段带 `[n]` 引用的答案；点引用跳到对应结果；可随时停止 |
 | 合并重复 | 同页多语言克隆（`/zh-cn/` `/ko/` 前缀）、同标题重复自动合并，状态栏如实显示条数 |
@@ -67,6 +68,32 @@ $ node scripts/bench.mjs          # 固定 10 查询，10 次请求 ≈ ¥0.05
 ```
 
 留下的 `core/dedupe.ts` 只做去重，不重排：**排在前面的是接口的判断，我没有更好的依据去改它。**
+
+## 智能检索：试过，只保留赢的那一半
+
+先做了完整版：模型规划 → 多路召回（RRF 融合）→ 按意图分派（`answer` / `repos` / `compare`）。
+然后用 12 道题做了 A/B 盲评（两份答案匿名，模型当裁判，顺序逐题交换）：
+
+```
+智能优 5 · 基线优 7 · 平 0
+```
+
+**没有赢。** 具体输在哪里：
+
+| 题型 | 结果 | 原因 |
+|---|---|---|
+| 技术问答 | 2:1 | 多路召回把弱来源也带进来，融合后反而稀释 |
+| 事实问答 | 1:2 | 单轮检索本来就够，规划只增加了一次调用 |
+| 对比 | 0:2 | 规划出 3 条检索式，答案变成三份材料的拼盘 |
+| 下载 | 1:2 | 规划对了、链接也对，但把散文换成了裸链接清单，裁判认为"没回答问题" |
+
+所以最终只保留了**赢的那一块**：
+
+- 只有当查询命中下载意图（`hasDownloadIntent`）时才启动规划，其余查询**不花那次规划钱**；
+- 规划结果只有 `action=repos` 才接管，`answer` / `compare` 一律回退单轮检索。
+
+这是纪律问题，不是偏好：跟上次删掉重排一样，**测不出收益的路径不进主干**。评估脚本保留在
+`scripts/eval.mjs`，以后改提示词或融合策略，先跑它。
 
 ## 官方源直返：为什么搜「模型下载」会出来一堆新闻
 
@@ -166,6 +193,7 @@ DEEPSEEK_API_KEY=sk-xxx node server/proxy.mjs --port 8787
 | `searchEndpoint` / `fetchEndpoint` | DeepSeek 官方 | 也可在「设置 → 搜索端点」临时覆盖（形态 B/C 用它） |
 | `maxCount` | `50` | 单次取回条数，也是分页的物理上限 |
 | `comparePresets` / `compareCount` | 知乎/GitHub/微博/B站 · 10 | 对比模式的栏目，改这里就换站点 |
+| `smartCount` / `pricePerPlan` | `8` / `0.003` | 智能检索每路取几条、规划成本估算 |
 | `officialCount` | `10` | 官方源追加召回取多少条 |
 | `dedupeBlocklist` | `[]` | 直接丢弃的域名（默认不用：屏蔽是观点，要不要你自己定） |
 | `answerEndpoint` / `answerModel` | chat/completions · `deepseek-chat` | 摘要用的模型；设置里可覆盖 |
@@ -187,6 +215,8 @@ src/core/                纯函数层，零 DOM，可单测
   api.ts                 HTTP 客户端：限速 → 超时 → 重试 → 错误分类
   dedupe.ts              去重（语言克隆 / 同标题）
   source.ts              下载意图识别 + 仓库页归一（HF / 魔搭）
+  planner.ts             意图 → 检索计划（封闭 JSON，可回退）
+  agent.ts               多路召回 + RRF 融合
   answer.ts              答案层：提示词、SSE 解析、引用提取
   limiter.ts             令牌桶（队列，不是丢弃）
   cache.ts               TTL + LRU
@@ -205,23 +235,24 @@ public/                  manifest / icon / service worker
 tests/                   100 个单元测试
 e2e/run.mjs              CDP 驱动的端到端测试（无 Playwright）
 scripts/serve.mjs        零依赖静态服务器
-scripts/bench.mjs        质量基准：固定 10 查询，对比重排前后
+scripts/bench.mjs        质量基准：固定 10 查询，对比去重前后
+scripts/eval.mjs         A/B 盲评：单轮检索 vs 规划检索
 docs/ARCHITECTURE.md     设计决策与数据流
 ```
 
 ## 测试
 
 ```bash
-npm test        # 13 文件 148 用例：限速/缓存/合并/重试/查询/对比/去重/摘要/高亮/存储/HTTP/代理
-npm run e2e     # 34 项：Key 门 → 搜索 → 高亮 → AI 摘要 → 分页 → 缓存 → 去重 → 对比 → 正文 → 401 → 主题
+npm test        # 15 文件 163 用例：限速/缓存/合并/重试/查询/对比/去重/摘要/高亮/存储/HTTP/代理
+npm run e2e     # 39 项：Key 门 → 搜索 → 高亮 → AI 摘要 → 分页 → 缓存 → 去重 → 对比 → 正文 → 401 → 主题
 ```
 
 e2e 用 CDP 直连本机 Chrome（`CHROME_PATH` 可覆盖），离线模式把 `window.fetch` 打桩，
 跑一百遍也不花钱；`--live` 才走真网络。实测：
 
 ```
-离线：34/34 checks passed
-真网：22/22 checks passed（48 条 / 5 页 / 759ms / 合并重复 2；AI 摘要流式出答案；对比 4 栏并排）
+离线：39/39 checks passed
+真网：27/27 checks passed（48 条 / 5 页 / 759ms / 合并重复 2；AI 摘要流式出答案；对比 4 栏并排）
 ```
 
 ## 部署
@@ -271,6 +302,6 @@ PWA 需要 HTTPS（`localhost` 例外）；service worker 只缓存同源静态�
 
 ## 版本说明
 
-0.5.0。0.1.0 是 880px 单栏版本，从原型 [`search-shell/`](../search-shell/) 重写而来；
+0.6.0。0.1.0 是 880px 单栏版本，从原型 [`search-shell/`](../search-shell/) 重写而来；
 0.2 增加对比模式、PWA 与可选代理；0.3 增加本地去重与质量基准；
-0.4 增加流式答案层（期间删掉了没跑出收益的重排逻辑）；0.5 增加下载意图的官方源召回。
+0.4 增加流式答案层（期间删掉了没跑出收益的重排逻辑）；0.5 增加下载意图的官方源召回；0.6 试了完整版意图规划（A/B 5:7 落败），只保留链接意图那一半。
