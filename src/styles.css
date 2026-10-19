@@ -574,6 +574,46 @@ body[data-mode='compare'] .foot { max-width: 1200px; }
 }
 
 /* ==========================================================================
+   Official source strip
+   ========================================================================== */
+.official {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+}
+.official-label { color: var(--fg-faint); font-size: 12px; white-space: nowrap; }
+.official-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.official-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px 3px 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--fg);
+  text-decoration: none;
+  max-width: 320px;
+}
+.official-chip:hover { border-color: var(--accent); text-decoration: none; }
+.official-host {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--link);
+  white-space: nowrap;
+}
+.official-repo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ==========================================================================
    Answer synthesis
    ========================================================================== */
 .answer {

@@ -181,6 +181,29 @@ const STUB = () => {
 
     const query = String(body.query ?? '');
 
+    if (query.includes('site:huggingface.co')) {
+      const repo = (url) => ({
+        title: url.split('/').slice(-2).join('/'),
+        url,
+        snippet: 's',
+        summary: 's',
+        content: '',
+        site_name: 'Hugging Face',
+        site_icon: null,
+        date: '2026-10-01T00:00:00+00:00',
+        authority: 3,
+        rerank_score: 2,
+      });
+      return json({
+        results: [
+          repo('https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017'),
+          repo('https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/discussions/12'),
+          repo('https://modelscope.cn/models/deepseek-ai/DeepSeek-V4.1-Flash-1017'),
+          repo('https://huggingface.co/blog/COPU2004/second-review-of-deepseek'),
+        ],
+      });
+    }
+
     if (query.includes('FAILFETCH')) {
       return json({
         results: Array.from({ length: 2 }, (_, i) => ({
@@ -407,6 +430,32 @@ try {
   );
   }
 
+  // --- official sources (download intent) ------------------------------
+  await cdp.evaluate(`
+    (() => {
+      const q = document.querySelector('#q');
+      q.value = 'DeepSeek 模型下载';
+      document.querySelector('#search-form').requestSubmit();
+    })()
+  `);
+  await waitFor(cdp.evaluate, `!document.querySelector('#official').hidden`, 10000, 'official strip');
+  const officialChips = await cdp.evaluate(
+    `[...document.querySelectorAll('#official .official-chip')].map((a) => a.getAttribute('href'))`,
+  );
+  record(
+    '下载意图触发官方源召回',
+    LIVE ? officialChips.length >= 1 : officialChips.length === 2,
+    officialChips.map((u) => u.split('/').slice(-2).join('/')).join(' | ') || '(none)',
+  );
+  record(
+    '把深链归一到仓库根',
+    officialChips.includes('https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017'),
+  );
+  record(
+    '过滤掉 blog/datasets 等非仓库页',
+    officialChips.every((u) => !u.includes('/blog/')),
+  );
+
   // --- compare mode ---------------------------------------------------
   // Back to the normal query: DUPTEST is a fixed 5-result fixture, not a
   // realistic four-column input.
@@ -419,7 +468,12 @@ try {
   `);
   await waitFor(cdp.evaluate, `document.querySelectorAll('#results .result').length === 10`, 6000, 'restore query');
   await cdp.evaluate(`document.querySelector('.seg[data-mode="compare"]').click()`);
-  await waitFor(cdp.evaluate, `document.querySelectorAll('.col').length === 4`, 8000, 'four compare columns');
+  await waitFor(
+    cdp.evaluate,
+    `document.querySelectorAll('.col').length === 4 && !document.querySelector('#status').innerText.includes('查询中')`,
+    20000,
+    'four compare columns settled',
+  );
   const colLabels = await cdp.evaluate(
     `[...document.querySelectorAll('.col-head .col-label')].map((n) => n.innerText).join(' / ')`,
   );

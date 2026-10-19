@@ -12,7 +12,8 @@
 ├─────────────────────────────────────────────────────┤
 │ core/*                纯函数，零 DOM，全部可单测      │
 │   api ← limiter ← retry                              │
-│   cache · singleflight · compare · dedupe · answer   │
+│   cache · singleflight · compare · dedupe · source   │
+│   answer                                              │
 │   query · highlight · format · storage · types       │
 └─────────────────────────────────────────────────────┘
 ```
@@ -113,6 +114,19 @@ BYOK 让「谁用谁付费」成为架构约束而不是运营策略。
 - **保留全部域名多样性**：不做同域数量限制，也不重排。顺序是接口的判断，客户端没有
   更强的依据（见下面「被删掉的东西」）。
 - 提供 `dedupeBlocklist` 但默认空：屏蔽某个站点是价值判断，应该由部署者决定。
+
+## 官方源（source.ts）
+
+同一个问题——「新闻里的链接」和「仓库页本身」哪个该排前面——答案取决于意图，而不是文本相似度。
+所以这里不做排序，做**第二次召回**：命中下载意图时追加一条限定
+`site:huggingface.co OR site:modelscope.cn` 的查询，再用 `repoOf()` 把深链收敛到仓库根，
+丢弃 `/blog` `/datasets` `/papers` `/discussions` `/collections`。
+
+三条边界：
+
+- 只在**没写 `site:`** 时触发（用户已经限定了范围，不要覆盖）；
+- 失败静默——这是个附赠面板，不能影响主结果；
+- 多花一次检索（¥0.005），所以在状态栏的费用里如实计入。
 
 ## 答案层（answer.ts）
 

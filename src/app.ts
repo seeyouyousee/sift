@@ -22,6 +22,13 @@ import {
 import { compareQueries, type ComparePreset } from './core/compare.js';
 import { dedupeResults, type DedupeStats } from './core/dedupe.js';
 import { AnswerError, buildMessages, citationIndexes, streamAnswer, type AnswerUsage } from './core/answer.js';
+import {
+  extractOfficialSources,
+  hasDownloadIntent,
+  hasSiteOperator,
+  officialQuery,
+  type OfficialSource,
+} from './core/source.js';
 import { fmtDate, fmtDuration, fmtMoney, hostOf } from './core/format.js';
 import { escapeHtml, highlight } from './core/highlight.js';
 import { detectBackend, JsonStore } from './core/storage.js';
@@ -94,6 +101,7 @@ export function createApp(): void {
     mode: settings.mode,
     columns: [] as ColumnState[],
     dedupe: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0 } as DedupeStats,
+    official: [] as OfficialSource[],
     answer: {
       text: '',
       sources: [] as SearchResult[],
@@ -171,6 +179,8 @@ export function createApp(): void {
     answerHide: must<HTMLButtonElement>('#answer-hide'),
     setAnswer: must<HTMLSelectElement>('#set-answer'),
     setAnswerModel: must<HTMLInputElement>('#set-answer-model'),
+    official: must<HTMLElement>('#official'),
+    officialList: must<HTMLElement>('#official-list'),
   };
 
   /* ---------------------------------------------------------------- */
@@ -683,12 +693,15 @@ export function createApp(): void {
     renderStatus();
 
     resetAnswer();
+    resetOfficial();
     inflightController?.abort();
     const controller = new AbortController();
     inflightController = controller;
 
     const cacheKey = `${built}|${CONFIG.maxCount}`;
     const started = performance.now();
+
+    if (hasDownloadIntent(built)) void fetchOfficial(text);
 
     try {
       const cached = cache.get(cacheKey);
@@ -731,6 +744,7 @@ export function createApp(): void {
 
   function finishSearch(text: string, options: { pushUrl?: boolean }): void {
     if (state.results.length === 0) el.empty.hidden = false;
+    mergeOfficial(extractOfficialSources(state.results));
     renderResults();
     renderPager();
     renderStatus();
@@ -815,6 +829,7 @@ export function createApp(): void {
 
   async function runCompare(text: string): Promise<void> {
     resetAnswer();
+    resetOfficial();
     const jobs = compareQueries(text, state.filters, CONFIG.comparePresets);
     state.query = text;
     state.built = '';
@@ -1044,6 +1059,73 @@ export function createApp(): void {
       state.answer.running = false;
       state.answer.elapsed = performance.now() - started;
       renderAnswer();
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* official sources ("where do I actually download this")            */
+  /* ---------------------------------------------------------------- */
+  let officialController: AbortController | null = null;
+
+  function renderOfficial(): void {
+    el.official.hidden = state.official.length === 0;
+    el.officialList.replaceChildren();
+    for (const source of state.official) {
+      const chip = h('a', {
+        class: 'official-chip',
+        href: source.url,
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        title: source.url,
+      });
+      chip.appendChild(h('span', { class: 'official-host', text: source.host === 'huggingface.co' ? 'HF' : '魔搭' }));
+      chip.appendChild(h('span', { class: 'official-repo', text: source.repo }));
+      el.officialList.appendChild(chip);
+    }
+  }
+
+  function mergeOfficial(sources: OfficialSource[]): void {
+    if (sources.length === 0) return;
+    const seen = new Set(state.official.map((source) => `${source.host}/${source.repo}`));
+    const added = sources.filter((source) => !seen.has(`${source.host}/${source.repo}`));
+    if (added.length === 0) return;
+    state.official = [...state.official, ...added];
+    renderOfficial();
+  }
+
+  function resetOfficial(): void {
+    officialController?.abort();
+    officialController = null;
+    state.official = [];
+    renderOfficial();
+  }
+
+  /**
+   * One extra, source-restricted query so repository pages can outrank the news
+   * articles that merely mention them. Best effort: failures stay silent.
+   */
+  async function fetchOfficial(text: string): Promise<void> {
+    if (hasSiteOperator(text)) return;
+    const query = officialQuery(text);
+    const cacheKey = `${query}|${CONFIG.officialCount}`;
+    const controller = new AbortController();
+    officialController = controller;
+
+    try {
+      let results = cache.get(cacheKey)?.results;
+      if (!results) {
+        const response = await flight.run(cacheKey, () =>
+          api.search(query, { count: CONFIG.officialCount, signal: controller.signal }),
+        );
+        if (response.results.length > 0) cache.set(cacheKey, response);
+        stats.searches++;
+        stats.spend += CONFIG.pricePerSuccessfulSearch;
+        results = response.results;
+      }
+      mergeOfficial(extractOfficialSources(results));
+      renderStats();
+    } catch {
+      /* a bonus section must never break the page */
     }
   }
 

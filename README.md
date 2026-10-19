@@ -34,6 +34,7 @@ npm run e2e:live   # 真的调线上接口（需要 DEEPSEEK_API_KEY，约 ¥0.0
 | **多站对比** | 一次查询拆成「知乎 / GitHub / 微博 / B 站」四栏并排，每栏独立缓存、独立计费 |
 | 搜索语法 | `site:` `-site:` `-词` `"短语"` `lang:` `after:` `before:` 原样透传 |
 | 筛选条 | 站点 / 排除站点 / 语言 / 时间（一天、一周、一月、一年），自动拼成操作符 |
+| **官方源直达** | 查询含「下载/权重/模型文件」等意图时，自动补一次限定 `site:huggingface.co OR site:modelscope.cn` 的召回，把新闻里的链接换成仓库页 |
 | **AI 摘要** | 取前 8 条摘要，模型流式合成一段带 `[n]` 引用的答案；点引用跳到对应结果；可随时停止 |
 | 合并重复 | 同页多语言克隆（`/zh-cn/` `/ko/` 前缀）、同标题重复自动合并，状态栏如实显示条数 |
 | 结果卡 | 标题、域名、摘要（三行截断，点击展开）、站点名、日期、权威度徽标 |
@@ -66,6 +67,29 @@ $ node scripts/bench.mjs          # 固定 10 查询，10 次请求 ≈ ¥0.05
 ```
 
 留下的 `core/dedupe.ts` 只做去重，不重排：**排在前面的是接口的判断，我没有更好的依据去改它。**
+
+## 官方源直返：为什么搜「模型下载」会出来一堆新闻
+
+因为新闻页是密集文本、正文里还带着仓库地址，重排得分天然高；模型仓库页基本只有文件名列表，
+文本相关性很差。**排序目标决定了新闻赢**——这也是 RRF 之前那次改写的教训。
+
+解法不是重排，而是**换一次召回**：识别到下载意图后，追加一次限定
+`site:huggingface.co OR site:modelscope.cn` 的查询，然后只保留**仓库根**：
+
+```
+huggingface.co/deepseek-ai/X/discussions/12  →  huggingface.co/deepseek-ai/X
+huggingface.co/blog/...                      →  丢弃（不是仓库）
+huggingface.co/datasets/...                  →  丢弃
+modelscope.cn/models/deepseek-ai/X           →  保留
+```
+
+实测「DeepSeek 模型下载」一次就召回 7 个仓库：
+`deepseek-ai/DeepSeek-V4.1-Flash-1017`、`DeepSeek-V4-Pro`、`DeepSeek-V4-Flash`、
+`DeepSeek-V4.1-Flash`、`OpenVINO/DeepSeek-R1-Distill-Qwen-7B-fp16-ov` ……
+它们以「官方源」条显示在结果上方，成本是多一次检索（¥0.005）。
+
+这条通道只在**命中意图时**触发（`hasDownloadIntent`），且用户自己写了 `site:` 就不触发——
+不替用户决定召回范围。
 
 ## 答案层：这才是「比百度好」的那一半
 
@@ -142,6 +166,7 @@ DEEPSEEK_API_KEY=sk-xxx node server/proxy.mjs --port 8787
 | `searchEndpoint` / `fetchEndpoint` | DeepSeek 官方 | 也可在「设置 → 搜索端点」临时覆盖（形态 B/C 用它） |
 | `maxCount` | `50` | 单次取回条数，也是分页的物理上限 |
 | `comparePresets` / `compareCount` | 知乎/GitHub/微博/B站 · 10 | 对比模式的栏目，改这里就换站点 |
+| `officialCount` | `10` | 官方源追加召回取多少条 |
 | `dedupeBlocklist` | `[]` | 直接丢弃的域名（默认不用：屏蔽是观点，要不要你自己定） |
 | `answerEndpoint` / `answerModel` | chat/completions · `deepseek-chat` | 摘要用的模型；设置里可覆盖 |
 | `answerMaxSources` / `answerMaxTokens` | 8 / 600 | 喂给模型的来源条数与输出上限 |
@@ -161,6 +186,7 @@ src/config.ts            全部可调参数
 src/core/                纯函数层，零 DOM，可单测
   api.ts                 HTTP 客户端：限速 → 超时 → 重试 → 错误分类
   dedupe.ts              去重（语言克隆 / 同标题）
+  source.ts              下载意图识别 + 仓库页归一（HF / 魔搭）
   answer.ts              答案层：提示词、SSE 解析、引用提取
   limiter.ts             令牌桶（队列，不是丢弃）
   cache.ts               TTL + LRU
@@ -186,16 +212,16 @@ docs/ARCHITECTURE.md     设计决策与数据流
 ## 测试
 
 ```bash
-npm test        # 12 文件 133 用例：限速/缓存/合并/重试/查询/对比/去重/摘要/高亮/存储/HTTP/代理
-npm run e2e     # 30 项：Key 门 → 搜索 → 高亮 → AI 摘要 → 分页 → 缓存 → 去重 → 对比 → 正文 → 401 → 主题
+npm test        # 13 文件 148 用例：限速/缓存/合并/重试/查询/对比/去重/摘要/高亮/存储/HTTP/代理
+npm run e2e     # 34 项：Key 门 → 搜索 → 高亮 → AI 摘要 → 分页 → 缓存 → 去重 → 对比 → 正文 → 401 → 主题
 ```
 
 e2e 用 CDP 直连本机 Chrome（`CHROME_PATH` 可覆盖），离线模式把 `window.fetch` 打桩，
 跑一百遍也不花钱；`--live` 才走真网络。实测：
 
 ```
-离线：30/30 checks passed
-真网：19/19 checks passed（48 条 / 5 页 / 759ms / 合并重复 2；AI 摘要流式出答案；对比 4 栏并排）
+离线：34/34 checks passed
+真网：22/22 checks passed（48 条 / 5 页 / 759ms / 合并重复 2；AI 摘要流式出答案；对比 4 栏并排）
 ```
 
 ## 部署
@@ -238,12 +264,13 @@ PWA 需要 HTTPS（`localhost` 例外）；service worker 只缓存同源静态�
 - [x] PWA 离线壳
 - [x] 本地去重（`core/dedupe.ts` + `scripts/bench.mjs`）
 - [x] 答案层：8 条 `summary` → 流式答案 + 可点击引用
+- [x] 官方源直达（下载意图 → 限定召回 → 仓库页）
 - [ ] 结果页快照：`fetch` 正文后做本地全文高亮
 - [ ] 对比模式支持自定义栏目与顺序
 - [ ] 代理侧接入简单的配额/身份体系
 
 ## 版本说明
 
-0.4.0。0.1.0 是 880px 单栏版本，从原型 [`search-shell/`](../search-shell/) 重写而来；
+0.5.0。0.1.0 是 880px 单栏版本，从原型 [`search-shell/`](../search-shell/) 重写而来；
 0.2 增加对比模式、PWA 与可选代理；0.3 增加本地去重与质量基准；
-0.4 增加流式答案层（期间删掉了没跑出收益的重排逻辑）。
+0.4 增加流式答案层（期间删掉了没跑出收益的重排逻辑）；0.5 增加下载意图的官方源召回。

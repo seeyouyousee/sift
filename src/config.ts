@@ -35,6 +35,9 @@ export const CONFIG = {
     { id: 'bilibili', label: 'B 站', site: 'bilibili.com' },
   ],
 
+  /** Second, source-restricted query for "where do I download this" intent. */
+  officialCount: 10,
+
   /** Local dedupe (src/core/dedupe.ts). Empty blocklist: opinion stays opt-in. */
   dedupeBlocklist: [] as string[],
 
