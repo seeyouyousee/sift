@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sift · 一个搜索壳子</title>
+    <meta name="description" content="Sift —— 带自己的 DeepSeek API Key 的网页搜索页：无后端、无账号体系、无埋点。" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f1115'/%3E%3Ccircle cx='14' cy='14' r='6' stroke='%234c8dff' stroke-width='3' fill='none'/%3E%3Cpath d='M19 19l6 6' stroke='%234c8dff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到结果</a>
+
+    <header class="top" id="top">
+      <div class="top-inner">
+        <a class="brand" href="./" id="brand">Sift</a>
+
+        <form class="search" id="search-form" role="search" autocomplete="off">
+          <div class="search-field">
+            <input
+              id="q"
+              type="search"
+              name="q"
+              placeholder="搜索网页…   按 / 聚焦"
+              aria-label="搜索关键词"
+              role="combobox"
+              aria-expanded="false"
+              aria-controls="suggestions"
+              aria-autocomplete="list"
+              spellcheck="false"
+            />
+            <ul class="suggestions" id="suggestions" role="listbox" hidden></ul>
+          </div>
+          <button class="btn primary" type="submit" id="go">搜索</button>
+          <button class="btn icon" type="button" id="btn-settings" aria-label="设置" title="设置">⚙</button>
+        </form>
+      </div>
+
+      <div class="filters" id="filters" hidden>
+        <label class="field-sm">
+          <span>站点</span>
+          <input id="f-site" placeholder="zhihu.com" title="只搜这些站点，多个用空格分隔" />
+        </label>
+        <label class="field-sm">
+          <span>排除</span>
+          <input id="f-exclude" placeholder="example.com" title="排除这些站点" />
+        </label>
+        <label class="field-sm">
+          <span>语言</span>
+          <select id="f-lang">
+            <option value="">不限</option>
+            <option value="zh">中文</option>
+            <option value="en">英文</option>
+            <option value="zh,en">中英</option>
+          </select>
+        </label>
+        <label class="field-sm">
+          <span>时间</span>
+          <select id="f-time">
+            <option value="any">不限</option>
+            <option value="day">一天内</option>
+            <option value="week">一周内</option>
+            <option value="month">一月内</option>
+            <option value="year">一年内</option>
+          </select>
+        </label>
+        <button class="btn ghost" type="button" id="btn-filters-clear">清空条件</button>
+        <span class="filters-note" id="filters-note"></span>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="card gate" id="gate" hidden>
+        <h1>先填你自己的 DeepSeek API Key</h1>
+        <p>
+          这个站点没有后端账号体系——搜索由你的浏览器带着<strong>你自己</strong>的 key 直连
+          DeepSeek 搜索接口，费用计在你的账号上。
+        </p>
+        <form class="gate-row" id="key-form">
+          <input type="password" id="key-input" placeholder="sk-…" autocomplete="off" spellcheck="false" aria-label="DeepSeek API Key" />
+          <button class="btn primary" type="submit" id="key-save">保存并开始</button>
+        </form>
+        <p class="fineprint">
+          · Key 只写入本浏览器的 localStorage，不上传、不经任何中间服务器；换设备需重填。<br />
+          · 在 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">platform.deepseek.com</a>
+          创建，账号需有余额（¥5 / 1000 次成功搜索）。<br />
+          · 接口限速 <strong>5 次/秒</strong>（按账号）。本页内置排队，连点不会 429。
+        </p>
+      </section>
+
+      <section class="empty" id="empty">
+        <div class="empty-title">搜点什么</div>
+        <div class="empty-sub">你的 key，你的额度，你的结果。没有服务端，没有埋点。</div>
+        <div class="chips" id="history" aria-label="搜索历史"></div>
+      </section>
+
+      <div class="status" id="status" role="status" aria-live="polite"></div>
+      <ol class="results" id="results" aria-label="搜索结果"></ol>
+      <nav class="pager" id="pager" aria-label="分页"></nav>
+    </main>
+
+    <footer class="foot">
+      <span id="foot-brand">Sift</span>
+      <span class="sep">·</span>
+      <a href="https://api-docs.deepseek.com/zh-cn/guides/search/" target="_blank" rel="noopener noreferrer">搜索接口文档</a>
+      <span class="sep">·</span>
+      <span id="foot-stats"></span>
+    </footer>
+
+    <div class="scrim" id="scrim" hidden></div>
+
+    <aside class="drawer" id="drawer" hidden aria-label="设置" aria-modal="true" role="dialog">
+      <div class="drawer-head">
+        <h2>设置</h2>
+        <button class="btn icon" type="button" id="drawer-close" aria-label="关闭">✕</button>
+      </div>
+      <div class="drawer-body">
+        <label class="row">
+          <span>每页条数</span>
+          <select id="set-page-size">
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+
+        <label class="row">
+          <span>摘要长度</span>
+          <select id="set-summary">
+            <option value="summary">长摘要（模型友好）</option>
+            <option value="snippet">短摘要（列表友好）</option>
+          </select>
+        </label>
+
+        <label class="row">
+          <span>主题</span>
+          <select id="set-theme">
+            <option value="auto">跟随系统</option>
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+          </select>
+        </label>
+
+        <label class="row stack">
+          <span>搜索端点（可选，指向你自己的代理）</span>
+          <input id="set-endpoint" placeholder="https://api.deepseek.com/v1/tools/search" spellcheck="false" />
+        </label>
+
+        <div class="stats" id="stats"></div>
+
+        <div class="danger">
+          <button class="btn ghost" type="button" id="btn-clear-cache">清空搜索缓存</button>
+          <button class="btn ghost" type="button" id="btn-clear-history">清空搜索历史</button>
+          <button class="btn danger" type="button" id="btn-clear-key">删除本机 API Key</button>
+          <button class="btn ghost" type="button" id="btn-export">导出设置</button>
+        </div>
+
+        <p class="fineprint">
+          本页不收集任何数据。唯一的出网请求是你的浏览器 → <code>api.deepseek.com</code>。
+        </p>
+      </div>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

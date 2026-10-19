@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vite/
+*.log
+.DS_Store
+
+# e2e artefacts
+e2e/last-run.png
+
+# local overrides
+.env
+.env.local
