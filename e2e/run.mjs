@@ -148,27 +148,6 @@ const STUB = () => {
       new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
 
     if (target.includes('/chat/completions')) {
-      const messages = Array.isArray(body.messages) ? body.messages : [];
-      const system = String(messages[0]?.content ?? '');
-      if (system.includes('搜索规划器')) {
-        return json({
-          choices: [
-            {
-              message: {
-                content: JSON.stringify({
-                  intent: '找到 DeepSeek 模型的官方下载地址',
-                  action: 'repos',
-                  entities: ['DeepSeek'],
-                  queries: [
-                    { q: 'DeepSeek 模型 site:huggingface.co', why: '官方仓库' },
-                    { q: 'DeepSeek 模型 site:modelscope.cn', why: '国内镜像' },
-                  ],
-                }),
-              },
-            },
-          ],
-        });
-      }
       const encoder = new TextEncoder();
       const chunk = (text) =>
         encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: null }] }) + '\n\n');
@@ -201,29 +180,6 @@ const STUB = () => {
     }
 
     const query = String(body.query ?? '');
-
-    if (query.includes('site:huggingface.co')) {
-      const repo = (url) => ({
-        title: url.split('/').slice(-2).join('/'),
-        url,
-        snippet: 's',
-        summary: 's',
-        content: '',
-        site_name: 'Hugging Face',
-        site_icon: null,
-        date: '2026-10-01T00:00:00+00:00',
-        authority: 3,
-        rerank_score: 2,
-      });
-      return json({
-        results: [
-          repo('https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017'),
-          repo('https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017/discussions/12'),
-          repo('https://modelscope.cn/models/deepseek-ai/DeepSeek-V4.1-Flash-1017'),
-          repo('https://huggingface.co/blog/COPU2004/second-review-of-deepseek'),
-        ],
-      });
-    }
 
     if (query.includes('FAILFETCH')) {
       return json({
@@ -450,85 +406,6 @@ try {
     (await cdp.evaluate(`document.querySelector('#status').innerText`)).replace(/\s+/g, ' '),
   );
   }
-
-  // --- official sources (download intent) ------------------------------
-  await cdp.evaluate(`
-    (() => {
-      const q = document.querySelector('#q');
-      q.value = 'DeepSeek 模型下载';
-      document.querySelector('#search-form').requestSubmit();
-    })()
-  `);
-  await waitFor(cdp.evaluate, `!document.querySelector('#official').hidden`, 10000, 'official strip');
-  const officialChips = await cdp.evaluate(
-    `[...document.querySelectorAll('#official .official-chip')].map((a) => a.getAttribute('href'))`,
-  );
-  record(
-    '下载意图触发官方源召回',
-    LIVE ? officialChips.length >= 1 : officialChips.length === 2,
-    officialChips.map((u) => u.split('/').slice(-2).join('/')).join(' | ') || '(none)',
-  );
-  const repoRoot = /^https:\/\/(huggingface\.co\/[^/]+\/[^/]+|modelscope\.cn\/models\/[^/]+\/[^/]+)$/;
-  record('把深链归一到仓库根', officialChips.length > 0 && officialChips.every((u) => repoRoot.test(u)));
-  record(
-    '过滤掉 blog/datasets 等非仓库页',
-    officialChips.every((u) => !u.includes('/blog/')),
-  );
-
-  // --- smart retrieval (plan → collect → repos) -------------------------
-  await cdp.evaluate(`
-    (() => {
-      document.querySelector('#q').value = '';
-      document.querySelector('#btn-settings').click();
-      const select = document.querySelector('#set-smart');
-      select.value = 'on';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      document.querySelector('#drawer-close').click();
-    })()
-  `);
-  await sleep(300);
-  await cdp.evaluate(`
-    (() => {
-      const q = document.querySelector('#q');
-      q.value = 'DeepSeek 模型下载';
-      document.querySelector('#search-form').requestSubmit();
-    })()
-  `);
-  await waitFor(cdp.evaluate, `!document.querySelector('#plan').hidden`, 12000, 'plan strip');
-  const intentText = await cdp.evaluate(`document.querySelector('#plan-intent').textContent`);
-  record('意图规划显示出来', intentText.trim().length > 3, intentText.trim().slice(0, 60));
-  record(
-    '规划出的检索式逐条可见',
-    (await cdp.evaluate(`document.querySelectorAll('#plan .plan-q').length`)) === 2,
-  );
-  record(
-    '链接型意图跳过 AI 摘要',
-    (await cdp.evaluate(`document.querySelector('#answer').hidden`)) === true,
-  );
-  await waitFor(
-    cdp.evaluate,
-    `document.querySelector('#status').innerText.includes('链接型') || document.querySelectorAll('#results .result').length > 0`,
-    20000,
-    'smart run settled',
-  );
-  record(
-    '规划结果为仓库页合并去重',
-    (await cdp.evaluate(`document.querySelectorAll('#results .result').length`)) >= 2,
-  );
-  record(
-    '状态栏标明链接型与路数',
-    /链接型 · 2 路/.test((await cdp.evaluate(`document.querySelector('#status').innerText`)).replace(/\s+/g, ' ')),
-  );
-  await cdp.evaluate(`
-    (() => {
-      document.querySelector('#btn-settings').click();
-      const select = document.querySelector('#set-smart');
-      select.value = 'off';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      document.querySelector('#drawer-close').click();
-    })()
-  `);
-  await sleep(300);
 
   // --- compare mode ---------------------------------------------------
   // Back to the normal query: DUPTEST is a fixed 5-result fixture, not a

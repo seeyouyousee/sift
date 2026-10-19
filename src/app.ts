@@ -29,15 +29,6 @@ import {
   streamAnswer,
   type AnswerUsage,
 } from './core/answer.js';
-import { collectEvidence } from './core/agent.js';
-import { buildPlannerMessages, parsePlan, type PlannerPlan } from './core/planner.js';
-import {
-  extractOfficialSources,
-  hasDownloadIntent,
-  hasSiteOperator,
-  officialQuery,
-  type OfficialSource,
-} from './core/source.js';
 import { fmtDate, fmtDuration, fmtMoney, hostOf } from './core/format.js';
 import { escapeHtml, highlight } from './core/highlight.js';
 import { detectBackend, JsonStore } from './core/storage.js';
@@ -65,14 +56,12 @@ interface Settings {
   dedupe: boolean;
   answer: boolean;
   answerModel: string;
-  smart: boolean;
 }
 
 interface SessionStats {
   searches: number;
   cacheHits: number;
   spend: number;
-  plans: number;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -84,7 +73,6 @@ const DEFAULT_SETTINGS: Settings = {
   dedupe: true,
   answer: true,
   answerModel: '',
-  smart: false,
 };
 
 /* ------------------------------------------------------------------ */
@@ -113,11 +101,7 @@ export function createApp(): void {
     mode: settings.mode,
     columns: [] as ColumnState[],
     dedupe: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0 } as DedupeStats,
-    official: [] as OfficialSource[],
-    plan: null as PlannerPlan | null,
-    planGroups: [] as Array<{ query: string; why: string; count: number }>,
     cost: 0,
-    smartFallback: false,
     answer: {
       text: '',
       sources: [] as SearchResult[],
@@ -130,7 +114,7 @@ export function createApp(): void {
     },
   };
 
-  const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0, plans: 0 };
+  const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0 };
   const pageCache = new Map<string, FetchResponse>();
   const cache = new TtlLru<string, SearchResponse>({
     ttlMs: CONFIG.cacheTtlMs,
@@ -195,12 +179,6 @@ export function createApp(): void {
     answerHide: must<HTMLButtonElement>('#answer-hide'),
     setAnswer: must<HTMLSelectElement>('#set-answer'),
     setAnswerModel: must<HTMLInputElement>('#set-answer-model'),
-    plan: must<HTMLElement>('#plan'),
-    planIntent: must<HTMLElement>('#plan-intent'),
-    planQueries: must<HTMLElement>('#plan-queries'),
-    setSmart: must<HTMLSelectElement>('#set-smart'),
-    official: must<HTMLElement>('#official'),
-    officialList: must<HTMLElement>('#official-list'),
   };
 
   /* ---------------------------------------------------------------- */
@@ -369,7 +347,6 @@ export function createApp(): void {
       (state.cost > 0
         ? `<span class="sep">·</span>本次 ${fmtMoney(state.cost)}`
         : `<span class="sep">·</span><span class="ok">缓存命中，未计费</span>`) +
-      (state.plan ? `<span class="sep">·</span><span class="muted">${state.plan.action === 'repos' ? '链接型' : '问答型'} · ${state.plan.queries.length} 路</span>` : '') +
       dedupeNote(state.dedupe);
   }
 
@@ -614,7 +591,7 @@ export function createApp(): void {
   function renderStats(): void {
     const cacheStats = cache.stats;
     const lines = [
-      `本次会话：${stats.searches} 次检索 · ${stats.plans} 次规划 · ${stats.cacheHits} 次缓存命中 · 约 ${fmtMoney(stats.spend)}`,
+      `本次会话：${stats.searches} 次检索 · ${stats.cacheHits} 次缓存命中 · 约 ${fmtMoney(stats.spend)}`,
       `缓存：${cacheStats.size} 条 · TTL ${Math.round(CONFIG.cacheTtlMs / 60000)} 分钟`,
       `存储：${backend ? 'localStorage（持久）' : '内存（刷新即失效）'}`,
       `队列：${bucket.queued} 个请求在等待令牌`,
@@ -703,14 +680,6 @@ export function createApp(): void {
       return;
     }
 
-    // Planning only pays for itself on link-type intent. On a 12-question A/B
-    // set it scored 5:7 against single-pass retrieval for prose answers, so it
-    // is not allowed to touch them.
-    if (settings.smart && hasDownloadIntent(text)) {
-      await runSmart(text, options);
-      return;
-    }
-
     await runClassic(text, options);
   }
 
@@ -729,19 +698,12 @@ export function createApp(): void {
     renderStatus();
 
     resetAnswer();
-    resetOfficial();
     inflightController?.abort();
     const controller = new AbortController();
     inflightController = controller;
 
     const cacheKey = `${built}|${CONFIG.maxCount}`;
     const started = performance.now();
-    state.plan = null;
-    state.planGroups = [];
-    state.smartFallback = false;
-    renderPlan();
-
-    if (hasDownloadIntent(built)) void fetchOfficial(text);
 
     try {
       const cached = cache.get(cacheKey);
@@ -786,7 +748,6 @@ export function createApp(): void {
 
   function finishSearch(text: string, options: { pushUrl?: boolean }, skipAnswer = false): void {
     if (state.results.length === 0) el.empty.hidden = false;
-    mergeOfficial(extractOfficialSources(state.results));
     renderResults();
     renderPager();
     renderStatus();
@@ -871,7 +832,6 @@ export function createApp(): void {
 
   async function runCompare(text: string): Promise<void> {
     resetAnswer();
-    resetOfficial();
     const jobs = compareQueries(text, state.filters, CONFIG.comparePresets);
     state.query = text;
     state.built = '';
@@ -1105,206 +1065,6 @@ export function createApp(): void {
   }
 
   /* ---------------------------------------------------------------- */
-  /* smart retrieval (plan → collect → answer)                         */
-  /* ---------------------------------------------------------------- */
-  function renderPlan(): void {
-    if (!state.plan) {
-      el.plan.hidden = true;
-      el.planQueries.replaceChildren();
-      return;
-    }
-    el.plan.hidden = false;
-    el.planIntent.textContent = state.plan.intent;
-    el.planQueries.replaceChildren();
-    for (const item of state.planGroups) {
-      const chip = h('span', { class: 'plan-q' });
-      chip.appendChild(h('span', { class: 'plan-q-text', text: item.query }));
-      chip.appendChild(h('span', { class: 'plan-q-count', text: String(item.count) }));
-      chip.title = item.why;
-      el.planQueries.appendChild(chip);
-    }
-  }
-
-  async function planQuestion(question: string, signal: AbortSignal): Promise<PlannerPlan | null> {
-    const { text } = await completeChat({
-      endpoint: CONFIG.answerEndpoint,
-      apiKey: state.key,
-      model: settings.answerModel || CONFIG.answerModel,
-      messages: buildPlannerMessages(question),
-      signal,
-      maxTokens: 400,
-      temperature: 0.1,
-    });
-    return parsePlan(text);
-  }
-
-  async function runSmart(text: string, options: { pushUrl?: boolean } = {}): Promise<void> {
-    const runId = ++runSeq;
-    state.query = text;
-    state.built = '';
-    state.error = null;
-    state.loading = true;
-    state.page = 1;
-    state.results = [];
-    state.plan = null;
-    state.planGroups = [];
-    state.cost = 0;
-    state.smartFallback = false;
-    el.empty.hidden = true;
-    clear(el.results);
-    clear(el.pager);
-    resetAnswer();
-    resetOfficial();
-    renderPlan();
-    el.status.className = 'status loading';
-    el.status.innerHTML = '<span class="spinner" aria-hidden="true"></span>正在理解问题…';
-
-    inflightController?.abort();
-    const controller = new AbortController();
-    inflightController = controller;
-    const started = performance.now();
-
-    let plan: PlannerPlan | null = null;
-    try {
-      plan = await planQuestion(text, controller.signal);
-    } catch {
-      plan = null;
-    }
-
-    if (!plan) {
-      // Superseded by a newer search: stop quietly instead of falling back and
-      // aborting that newer run.
-      if (runId !== runSeq) return;
-      state.smartFallback = true;
-      state.loading = false;
-      toast('意图规划失败，已回退单轮检索');
-      await runClassic(text, options);
-      return;
-    }
-
-    if (runId !== runSeq) return;
-
-    // The planner only earns its keep when the answer *is* a list of links.
-    if (plan.action !== 'repos') {
-      await runClassic(text, options);
-      return;
-    }
-
-    state.plan = plan;
-    stats.plans += 1;
-    state.cost += CONFIG.pricePerPlan;
-    state.planGroups = plan.queries.map((item) => ({ query: item.q, why: item.why, count: 0 }));
-    renderPlan();
-    el.status.className = 'status loading';
-    el.status.innerHTML = `<span class="spinner" aria-hidden="true"></span>检索中（${plan.queries.length} 路）…`;
-
-    try {
-      const { groups, evidence } = await collectEvidence(
-        plan,
-        {
-          search: async (query, count) =>
-            (await api.search(query, { count, signal: controller.signal })).results,
-        },
-        CONFIG.smartCount,
-      );
-
-      if (runId !== runSeq) return;
-      state.planGroups = groups.map((group) => ({ query: group.query, why: group.why, count: group.results.length }));
-      const searched = groups.filter((group) => group.results.length > 0).length;
-      stats.searches += searched;
-      state.cost += searched * CONFIG.pricePerSuccessfulSearch;
-
-      const deduped = applyDedupe(evidence);
-      state.results = deduped.results;
-      state.dedupe = deduped.dedupe;
-      state.loading = false;
-      state.cached = false;
-      state.elapsed = performance.now() - started;
-      stats.spend += state.cost;
-      renderPlan();
-
-      // "Where do I download this" wants links, not prose.
-      const skipAnswer = plan.action === 'repos';
-      finishSearch(text, options, skipAnswer);
-      if (skipAnswer) mergeOfficial(extractOfficialSources(state.results));
-    } catch (error) {
-      const apiError = toApiError(error);
-      state.loading = false;
-      if (apiError.kind === 'aborted' || runId !== runSeq) return;
-      state.error = apiError;
-      renderStatus();
-      renderStats();
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* official sources ("where do I actually download this")            */
-  /* ---------------------------------------------------------------- */
-  let officialController: AbortController | null = null;
-
-  function renderOfficial(): void {
-    el.official.hidden = state.official.length === 0;
-    el.officialList.replaceChildren();
-    for (const source of state.official) {
-      const chip = h('a', {
-        class: 'official-chip',
-        href: source.url,
-        target: '_blank',
-        rel: 'noopener noreferrer',
-        title: source.url,
-      });
-      chip.appendChild(h('span', { class: 'official-host', text: source.host === 'huggingface.co' ? 'HF' : '魔搭' }));
-      chip.appendChild(h('span', { class: 'official-repo', text: source.repo }));
-      el.officialList.appendChild(chip);
-    }
-  }
-
-  function mergeOfficial(sources: OfficialSource[]): void {
-    if (sources.length === 0) return;
-    const seen = new Set(state.official.map((source) => `${source.host}/${source.repo}`));
-    const added = sources.filter((source) => !seen.has(`${source.host}/${source.repo}`));
-    if (added.length === 0) return;
-    state.official = [...state.official, ...added];
-    renderOfficial();
-  }
-
-  function resetOfficial(): void {
-    officialController?.abort();
-    officialController = null;
-    state.official = [];
-    renderOfficial();
-  }
-
-  /**
-   * One extra, source-restricted query so repository pages can outrank the news
-   * articles that merely mention them. Best effort: failures stay silent.
-   */
-  async function fetchOfficial(text: string): Promise<void> {
-    if (hasSiteOperator(text)) return;
-    const query = officialQuery(text);
-    const cacheKey = `${query}|${CONFIG.officialCount}`;
-    const controller = new AbortController();
-    officialController = controller;
-
-    try {
-      let results = cache.get(cacheKey)?.results;
-      if (!results) {
-        const response = await flight.run(cacheKey, () =>
-          api.search(query, { count: CONFIG.officialCount, signal: controller.signal }),
-        );
-        if (response.results.length > 0) cache.set(cacheKey, response);
-        stats.searches++;
-        stats.spend += CONFIG.pricePerSuccessfulSearch;
-        results = response.results;
-      }
-      mergeOfficial(extractOfficialSources(results));
-      renderStats();
-    } catch {
-      /* a bonus section must never break the page */
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
   /* gate / drawer                                                     */
   /* ---------------------------------------------------------------- */
   function showGate(): void {
@@ -1324,7 +1084,6 @@ export function createApp(): void {
     el.setDedupe.value = settings.dedupe ? 'on' : 'off';
     el.setAnswer.value = settings.answer ? 'on' : 'off';
     el.setAnswerModel.value = settings.answerModel;
-    el.setSmart.value = settings.smart ? 'on' : 'off';
     renderStats();
     el.setPageSize.focus();
   }
@@ -1438,13 +1197,6 @@ export function createApp(): void {
 
 来源：${state.query}`);
     toast(ok ? '摘要已复制' : '复制失败');
-  });
-
-  el.setSmart.addEventListener('change', () => {
-    settings.smart = el.setSmart.value === 'on';
-    persistSettings();
-    toast(settings.smart ? '已开启智能检索（先规划，再检索）' : '已关闭智能检索');
-    if (el.q.value.trim()) void runSearch({ pushUrl: false });
   });
 
   el.setAnswer.addEventListener('change', () => {
@@ -1565,7 +1317,6 @@ export function createApp(): void {
   el.setDedupe.value = settings.dedupe ? 'on' : 'off';
   el.setAnswer.value = settings.answer ? 'on' : 'off';
   el.setAnswerModel.value = settings.answerModel;
-  el.setSmart.value = settings.smart ? 'on' : 'off';
   document.title = `${CONFIG.brand} · 一个搜索壳子`;
   renderHistory();
   renderStats();
