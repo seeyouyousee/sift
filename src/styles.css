@@ -290,6 +290,7 @@ main { max-width: 880px; margin: 0 auto; padding: 0 20px 90px; }
 .status.error .hint { color: var(--fg-dim); }
 .status.warn { color: var(--warn); }
 .status .err-count { color: var(--err); }
+.status .muted { color: var(--fg-faint); }
 .status.loading { color: var(--fg-dim); }
 
 .spinner {

@@ -29,6 +29,10 @@ export const CONFIG = {
     { id: 'bilibili', label: 'B 站', site: 'bilibili.com' },
   ],
 
+  /** Local re-ranking (src/core/rank.ts). maxPerDomain: 0 disables the cap. */
+  rankMaxPerDomain: 2,
+  rankBlocklist: [] as string[],
+
   /** Client-side cache. Empty result sets are never cached. */
   cacheTtlMs: 10 * 60 * 1000,
   cacheMaxEntries: 60,

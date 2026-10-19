@@ -20,6 +20,7 @@ import {
   type TimePreset,
 } from './core/query.js';
 import { compareQueries, type ComparePreset } from './core/compare.js';
+import { rankResults, type RankStats } from './core/rank.js';
 import { fmtDate, fmtDuration, fmtMoney, hostOf } from './core/format.js';
 import { escapeHtml, highlight } from './core/highlight.js';
 import { detectBackend, JsonStore } from './core/storage.js';
@@ -44,6 +45,7 @@ interface Settings {
   theme: ThemeMode;
   endpoint: string;
   mode: ResultMode;
+  rerank: boolean;
 }
 
 interface SessionStats {
@@ -58,6 +60,7 @@ const DEFAULT_SETTINGS: Settings = {
   theme: 'auto',
   endpoint: '',
   mode: 'single',
+  rerank: true,
 };
 
 /* ------------------------------------------------------------------ */
@@ -85,6 +88,7 @@ export function createApp(): void {
     error: null as ApiError | null,
     mode: settings.mode,
     columns: [] as ColumnState[],
+    rank: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0, demoted: 0 } as RankStats,
   };
 
   const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0 };
@@ -140,6 +144,7 @@ export function createApp(): void {
     setSummary: must<HTMLSelectElement>('#set-summary'),
     setTheme: must<HTMLSelectElement>('#set-theme'),
     setEndpoint: must<HTMLInputElement>('#set-endpoint'),
+    setRerank: must<HTMLSelectElement>('#set-rerank'),
     compare: must<HTMLElement>('#compare'),
     modeSwitch: must<HTMLElement>('.mode-switch'),
   };
@@ -244,6 +249,18 @@ export function createApp(): void {
   /* ---------------------------------------------------------------- */
   /* status                                                            */
   /* ---------------------------------------------------------------- */
+  /** Local re-rank + dedupe; a no-op when the user turned it off. */
+  function applyRank(results: SearchResult[]): { results: SearchResult[]; rank: RankStats } {
+    if (!settings.rerank) {
+      return { results, rank: { blocklisted: 0, duplicateUrl: 0, duplicateTitle: 0, demoted: 0 } };
+    }
+    const outcome = rankResults(results, {
+      maxPerDomain: CONFIG.rankMaxPerDomain,
+      blocklist: CONFIG.rankBlocklist,
+    });
+    return { results: outcome.results, rank: outcome.stats };
+  }
+
   function renderStatus(): void {
     if (state.loading) {
       el.status.className = 'status loading';
@@ -300,7 +317,18 @@ export function createApp(): void {
       `<span class="sep">·</span>${fmtDuration(state.elapsed)}` +
       (state.cached
         ? `<span class="sep">·</span><span class="ok">缓存命中，未计费</span>`
-        : `<span class="sep">·</span>本次 ${fmtMoney(CONFIG.pricePerSuccessfulSearch)}`);
+        : `<span class="sep">·</span>本次 ${fmtMoney(CONFIG.pricePerSuccessfulSearch)}`) +
+      rankNote(state.rank);
+  }
+
+  /** One-line, honest note about local post-processing. */
+  function rankNote(rank: RankStats): string {
+    const removed = rank.blocklisted + rank.duplicateUrl + rank.duplicateTitle;
+    if (removed === 0 && rank.demoted === 0) return '';
+    const parts: string[] = [];
+    if (removed > 0) parts.push(`合并重复 ${removed}`);
+    if (rank.demoted > 0) parts.push(`同域降权 ${rank.demoted}`);
+    return `<span class="sep">·</span><span class="muted">${parts.join(' / ')}</span>`;
   }
 
   function describeError(error: ApiError): { title: string; hint: string } {
@@ -607,7 +635,9 @@ export function createApp(): void {
         stats.cacheHits++;
         state.cached = true;
         state.elapsed = performance.now() - started;
-        state.results = cached.results;
+        const ranked = applyRank(cached.results);
+        state.results = ranked.results;
+        state.rank = ranked.rank;
         state.loading = false;
         finishSearch(text, options);
       } else {
@@ -620,7 +650,9 @@ export function createApp(): void {
         stats.spend += CONFIG.pricePerSuccessfulSearch;
         state.cached = false;
         state.elapsed = performance.now() - started;
-        state.results = response.results;
+        const ranked = applyRank(response.results);
+        state.results = ranked.results;
+        state.rank = ranked.rank;
         state.loading = false;
         finishSearch(text, options);
       }
@@ -756,7 +788,7 @@ export function createApp(): void {
         try {
           const cached = cache.get(cacheKey);
           if (cached) {
-            column.results = cached.results;
+            column.results = applyRank(cached.results).results;
             column.cached = true;
             hits++;
           } else {
@@ -764,7 +796,7 @@ export function createApp(): void {
               api.search(job.query, { count: CONFIG.compareCount, signal: controller.signal }),
             );
             if (response.results.length > 0) cache.set(cacheKey, response);
-            column.results = response.results;
+            column.results = applyRank(response.results).results;
             paid++;
           }
         } catch (error) {
@@ -806,6 +838,7 @@ export function createApp(): void {
     el.setSummary.value = settings.summary;
     el.setTheme.value = settings.theme;
     el.setEndpoint.value = settings.endpoint;
+    el.setRerank.value = settings.rerank ? 'on' : 'off';
     renderStats();
     el.setPageSize.focus();
   }
@@ -916,6 +949,13 @@ export function createApp(): void {
     applyTheme();
   });
 
+  el.setRerank.addEventListener('change', () => {
+    settings.rerank = el.setRerank.value === 'on';
+    persistSettings();
+    if (el.q.value.trim()) void runSearch({ pushUrl: false });
+    else toast(settings.rerank ? '已开启重排与去重' : '已关闭，显示原始排序');
+  });
+
   el.setEndpoint.addEventListener('change', () => {
     settings.endpoint = el.setEndpoint.value.trim();
     persistSettings();
@@ -984,6 +1024,7 @@ export function createApp(): void {
   el.setSummary.value = settings.summary;
   el.setTheme.value = settings.theme;
   el.setEndpoint.value = settings.endpoint;
+  el.setRerank.value = settings.rerank ? 'on' : 'off';
   document.title = `${CONFIG.brand} · 一个搜索壳子`;
   renderHistory();
   renderStats();
