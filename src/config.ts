@@ -20,6 +20,15 @@ export const CONFIG = {
   defaultPageSize: 10,
   pageSizes: [10, 20, 50] as const,
 
+  /** Compare mode: each column is one `site:` scoped query. */
+  compareCount: 10,
+  comparePresets: [
+    { id: 'zhihu', label: '知乎', site: 'zhihu.com' },
+    { id: 'github', label: 'GitHub', site: 'github.com' },
+    { id: 'weibo', label: '微博', site: 'weibo.com' },
+    { id: 'bilibili', label: 'B 站', site: 'bilibili.com' },
+  ],
+
   /** Client-side cache. Empty result sets are never cached. */
   cacheTtlMs: 10 * 60 * 1000,
   cacheMaxEntries: 60,

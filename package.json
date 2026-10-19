@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "serve": "node scripts/serve.mjs dist 8765",
+    "serve:proxy": "node server/proxy.mjs",
     "e2e": "node e2e/run.mjs",
     "e2e:live": "node e2e/run.mjs --live"
   },

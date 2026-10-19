@@ -212,6 +212,10 @@ try {
   await cdp.send('Page.navigate', { url: BASE });
   await sleep(700);
   record('填入 Key 后门消失', (await cdp.evaluate(`document.querySelector('#gate').hidden`)) === true);
+  record(
+    '抽屉默认不可见（[hidden] 真正生效）',
+    (await cdp.evaluate(`getComputedStyle(document.querySelector('#drawer')).display`)) === 'none',
+  );
   record('筛选栏可见', (await cdp.evaluate(`!document.querySelector('#filters').hidden`)) === true);
 
   // --- search ---------------------------------------------------------
@@ -256,6 +260,38 @@ try {
     const callsAfterRepeat = await cdp.evaluate(`window.__calls.length`);
     record('缓存命中不发请求', callsAfterRepeat === callsAfterFirst, `calls=${callsAfterRepeat}`);
   }
+
+  // --- compare mode ---------------------------------------------------
+  await cdp.evaluate(`document.querySelector('.seg[data-mode="compare"]').click()`);
+  await waitFor(cdp.evaluate, `document.querySelectorAll('.col').length === 4`, 8000, 'four compare columns');
+  const colLabels = await cdp.evaluate(
+    `[...document.querySelectorAll('.col-head .col-label')].map((n) => n.innerText).join(' / ')`,
+  );
+  record('对比模式渲染 4 栏', (await cdp.evaluate(`document.querySelectorAll('.col').length`)) === 4, colLabels);
+  record(
+    '对比模式下分页隐藏',
+    (await cdp.evaluate(`getComputedStyle(document.querySelector('#pager')).display`)) === 'none',
+  );
+  if (!LIVE) {
+    record(
+      '每栏都有结果',
+      (await cdp.evaluate(`document.querySelectorAll('.col-body .result').length`)) === 40,
+      `rows=${await cdp.evaluate(`document.querySelectorAll('.col-body .result').length`)}`,
+    );
+    record(
+      '状态栏按请求次数计费',
+      /4 次请求/.test((await cdp.evaluate(`document.querySelector('#status').innerText`)).replace(/\s+/g, ' ')),
+      (await cdp.evaluate(`document.querySelector('#status').innerText`)).replace(/\s+/g, ' '),
+    );
+  }
+  await cdp.evaluate(`document.querySelector('.seg[data-mode="single"]').click()`);
+  await waitFor(
+    cdp.evaluate,
+    `document.querySelector('#compare').hidden === true && document.querySelectorAll('#results .result').length > 0`,
+    8000,
+    'back to single mode',
+  );
+  record('切回单栏恢复结果列表', (await cdp.evaluate(`document.querySelectorAll('#results .result').length`)) === 10);
 
   // --- read panel -----------------------------------------------------
   await cdp.evaluate(`document.querySelector('.result .link-btn').click()`);

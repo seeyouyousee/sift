@@ -12,7 +12,7 @@
 ├─────────────────────────────────────────────────────┤
 │ core/*                纯函数，零 DOM，全部可单测      │
 │   api ← limiter ← retry                              │
-│   cache · singleflight                               │
+│   cache · singleflight · compare                     │
 │   query · highlight · format · storage · types       │
 └─────────────────────────────────────────────────────┘
 ```
@@ -95,11 +95,54 @@ BYOK 让「谁用谁付费」成为架构约束而不是运营策略。
 
 | 层 | 工具 | 覆盖 |
 | --- | --- | --- |
-| 单元 | Vitest（node 环境） | 令牌桶、TTL/LRU、singleflight、退避、查询拼接、高亮转义、存储降级、HTTP 错误映射 |
-| 端到端 | 自研 CDP 驱动 + 本机 Chrome | Key 门、搜索渲染、分页、缓存命中、正文抓取、401 处理、主题切换、console 干净 |
+| 单元 | Vitest（node 环境） | 令牌桶、TTL/LRU、singleflight、退避、查询拼接、对比查询生成、高亮转义、存储降级、HTTP 错误映射、代理转发与限流（100 个用例） |
+| 端到端 | 自研 CDP 驱动 + 本机 Chrome | Key 门、搜索渲染、分页、缓存命中、对比模式、正文抓取、401 处理、主题切换、`[hidden]` 生效、console 干净（24 项） |
 
 不引入 Playwright：为一个页面装 250 MB 的浏览器依赖不划算，CDP 已经足够。
 `e2e/run.mjs` 离线模式把 `window.fetch` 打桩，所以可以频繁跑而不烧钱。
+
+## 对比模式
+
+一次输入 → 四个站内查询，四栏并排：
+
+```ts
+compareQueries('rust', filters, presets)
+// → ['rust site:zhihu.com', 'rust site:github.com', …]
+```
+
+三个刻意的取舍：
+
+1. **用户自己的 `site:` 筛选被丢弃**，否则四栏会是四次相同查询；
+   排除站点、语言、时间仍然作用到每一栏。
+2. **每栏独立缓存、独立计费**：`cache` 的 key 是各自的 query，某栏命中缓存
+   就只省那一栏的钱。状态栏按「实际发出的请求数」算钱，不是按栏数。
+3. **只取 10 条/栏，不分页**：对比是「看一眼哪站有货」，不是精读；
+   点「只看 zhihu.com」才切回单栏继续分页。
+
+渲染上，对比模式会把外壳从 880px 放宽到 1200px，让四栏在笔记本上一行排开
+（`body[data-mode='compare']` 控制），窄屏自动降到 1 栏。
+
+## PWA 缓存规则
+
+service worker 只有一条硬规则：**只碰同源 GET**。
+
+| 请求 | 策略 | 原因 |
+| --- | --- | --- |
+| 页面导航 | 网络优先，失败回退缓存的壳 | 重新部署后刷新即可见 |
+| `/assets/*`（带 hash） | 缓存优先 | 文件名随内容变，不存在陈旧问题 |
+| `api.deepseek.com/*` | 完全不介入 | 搜索结果属于用户，绝不进共享缓存 |
+
+## 可选代理
+
+`server/proxy.mjs` 用 190 行解决「不想让用户填 key」这件事，两种模式：
+
+- **BYOK 转发**：不设 `DEEPSEEK_API_KEY`，原样转发客户端的 `Authorization`。
+  你获得统一域名/日志/限流，但不碰账单。
+- **共享 key**：设了 `DEEPSEEK_API_KEY` 就注入服务端 key，你付钱。
+  此时 5 QPS 是全站共享的，代理必须排队：`createPacer()` 把请求按 `1000/qps`
+  毫秒错开，排队超过 `maxWaitMs` 直接回 429 而不是无限堆积。
+
+代理不做身份体系——那是网关层的事，README 的「已知限制」里写明了。
 
 ## 扩展点
 

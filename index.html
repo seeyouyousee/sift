@@ -9,6 +9,9 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f1115'/%3E%3Ccircle cx='14' cy='14' r='6' stroke='%234c8dff' stroke-width='3' fill='none'/%3E%3Cpath d='M19 19l6 6' stroke='%234c8dff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E"
     />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <meta name="theme-color" content="#0f1115" />
   </head>
   <body>
     <a class="skip-link" href="#main">跳到结果</a>
@@ -39,6 +42,10 @@
       </div>
 
       <div class="filters" id="filters" hidden>
+        <div class="mode-switch" role="group" aria-label="结果模式">
+          <button class="seg" type="button" data-mode="single" aria-pressed="true">单栏</button>
+          <button class="seg" type="button" data-mode="compare" aria-pressed="false">对比</button>
+        </div>
         <label class="field-sm">
           <span>站点</span>
           <input id="f-site" placeholder="zhihu.com" title="只搜这些站点，多个用空格分隔" />
@@ -99,6 +106,7 @@
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <ol class="results" id="results" aria-label="搜索结果"></ol>
       <nav class="pager" id="pager" aria-label="分页"></nav>
+      <section class="compare" id="compare" hidden aria-label="多站对比"></section>
     </main>
 
     <footer class="foot">

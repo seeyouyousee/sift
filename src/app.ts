@@ -19,6 +19,7 @@ import {
   type Filters,
   type TimePreset,
 } from './core/query.js';
+import { compareQueries, type ComparePreset } from './core/compare.js';
 import { fmtDate, fmtDuration, fmtMoney, hostOf } from './core/format.js';
 import { escapeHtml, highlight } from './core/highlight.js';
 import { detectBackend, JsonStore } from './core/storage.js';
@@ -26,12 +27,23 @@ import { clear, copyText, debounce, h, must } from './ui/dom.js';
 
 type SummaryMode = 'summary' | 'snippet';
 type ThemeMode = 'auto' | 'dark' | 'light';
+type ResultMode = 'single' | 'compare';
+
+interface ColumnState {
+  preset: ComparePreset;
+  query: string;
+  results: SearchResult[];
+  error: ApiError | null;
+  cached: boolean;
+  elapsed: number;
+}
 
 interface Settings {
   pageSize: number;
   summary: SummaryMode;
   theme: ThemeMode;
   endpoint: string;
+  mode: ResultMode;
 }
 
 interface SessionStats {
@@ -45,6 +57,7 @@ const DEFAULT_SETTINGS: Settings = {
   summary: 'summary',
   theme: 'auto',
   endpoint: '',
+  mode: 'single',
 };
 
 /* ------------------------------------------------------------------ */
@@ -70,6 +83,8 @@ export function createApp(): void {
     elapsed: 0,
     cached: false,
     error: null as ApiError | null,
+    mode: settings.mode,
+    columns: [] as ColumnState[],
   };
 
   const stats: SessionStats = { searches: 0, cacheHits: 0, spend: 0 };
@@ -125,6 +140,8 @@ export function createApp(): void {
     setSummary: must<HTMLSelectElement>('#set-summary'),
     setTheme: must<HTMLSelectElement>('#set-theme'),
     setEndpoint: must<HTMLInputElement>('#set-endpoint'),
+    compare: must<HTMLElement>('#compare'),
+    modeSwitch: must<HTMLElement>('.mode-switch'),
   };
 
   /* ---------------------------------------------------------------- */
@@ -193,6 +210,7 @@ export function createApp(): void {
     set('exclude', state.filters.excludeSites);
     set('lang', state.filters.lang);
     set('time', state.filters.time === 'any' ? '' : state.filters.time);
+    set('mode', state.mode === 'compare' ? 'compare' : '');
     window.history.replaceState(null, '', url);
   }
 
@@ -204,6 +222,11 @@ export function createApp(): void {
       lang: params.get('lang') ?? '',
       time: (params.get('time') as TimePreset) ?? 'any',
     };
+    const mode = params.get('mode');
+    if (mode === 'compare' || mode === 'single') {
+      state.mode = mode;
+      settings.mode = mode;
+    }
     syncFilterInputs();
     return params.get('q') ?? '';
   }
@@ -233,6 +256,27 @@ export function createApp(): void {
       el.status.innerHTML = `<strong>${escapeHtml(title)}</strong><span class="hint">${escapeHtml(hint)}</span>`;
       return;
     }
+    if (state.mode === 'compare') {
+      if (state.columns.length === 0) {
+        el.status.className = 'status';
+        el.status.textContent = '';
+        return;
+      }
+      const rows = state.columns.reduce((n, column) => n + column.results.length, 0);
+      const paid = state.columns.filter((column) => !column.cached && !column.error).length;
+      const failed = state.columns.filter((column) => column.error).length;
+      el.status.className = 'status';
+      el.status.innerHTML =
+        `<span class="dot" aria-hidden="true"></span>${state.columns.length} 栏` +
+        `<span class="sep">·</span>${rows} 条` +
+        `<span class="sep">·</span>${fmtDuration(state.elapsed)}` +
+        (paid > 0
+          ? `<span class="sep">·</span>本次 ${fmtMoney(paid * CONFIG.pricePerSuccessfulSearch)}（${paid} 次请求）`
+          : `<span class="sep">·</span><span class="ok">全部命中缓存，未计费</span>`) +
+        (failed > 0 ? `<span class="sep">·</span><span class="err-count">${failed} 栏失败</span>` : '');
+      return;
+    }
+
     if (state.results.length === 0) {
       if (state.built) {
         el.status.className = 'status warn';
@@ -298,7 +342,7 @@ export function createApp(): void {
     }
   }
 
-  function renderResult(result: SearchResult, terms: string[]): HTMLElement {
+  function renderResult(result: SearchResult, terms: string[], options: { compact?: boolean } = {}): HTMLElement {
     const title = h('a', {
       class: 'result-title',
       href: result.url,
@@ -331,19 +375,21 @@ export function createApp(): void {
     }
 
     const actions = h('div', { class: 'result-actions' });
-    const readBtn = h('button', { class: 'link-btn', type: 'button', text: '阅读正文' });
-    readBtn.addEventListener('click', () => void toggleRead(host, result, readBtn));
-    actions.appendChild(readBtn);
+    if (!options.compact) {
+      const readBtn = h('button', { class: 'link-btn', type: 'button', text: '阅读正文' });
+      readBtn.addEventListener('click', () => void toggleRead(host, result, readBtn));
+      actions.appendChild(readBtn);
 
-    const site = hostOf(result.url);
-    if (site) {
-      const siteBtn = h('button', { class: 'link-btn', type: 'button', text: '只搜本站' });
-      siteBtn.addEventListener('click', () => {
-        state.filters.site = site;
-        syncFilterInputs();
-        void runSearch({ pushUrl: true });
-      });
-      actions.appendChild(siteBtn);
+      const site = hostOf(result.url);
+      if (site) {
+        const siteBtn = h('button', { class: 'link-btn', type: 'button', text: '只搜本站' });
+        siteBtn.addEventListener('click', () => {
+          state.filters.site = site;
+          syncFilterInputs();
+          void runSearch({ pushUrl: true });
+        });
+        actions.appendChild(siteBtn);
+      }
     }
 
     const copyBtn = h('button', { class: 'link-btn', type: 'button', text: '复制链接' });
@@ -353,7 +399,7 @@ export function createApp(): void {
     });
     actions.appendChild(copyBtn);
 
-    const host = h('li', { class: 'result' }, title, url, snippet, meta);
+    const host = h('li', { class: `result${options.compact ? ' compact' : ''}` }, title, url, snippet, meta);
     meta.appendChild(actions);
     return host;
   }
@@ -531,6 +577,11 @@ export function createApp(): void {
       time: el.fTime.value as TimePreset,
     };
 
+    if (state.mode === 'compare') {
+      await runCompare(text);
+      return;
+    }
+
     const built = buildQuery(text, state.filters);
     state.query = text;
     state.built = built;
@@ -595,6 +646,147 @@ export function createApp(): void {
       pushHistory(text);
       syncUrl();
     }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* compare mode                                                      */
+  /* ---------------------------------------------------------------- */
+  function renderCompare(): void {
+    clear(el.compare);
+    const terms = highlightTerms(state.query);
+    for (const column of state.columns) el.compare.appendChild(renderColumn(column, terms));
+  }
+
+  function renderColumn(column: ColumnState, terms: string[]): HTMLElement {
+    const meta = column.error
+      ? '失败'
+      : `${column.results.length} 条${column.cached ? ' · 缓存' : ''} · ${fmtDuration(column.elapsed)}`;
+    const head = h(
+      'div',
+      { class: 'col-head' },
+      h('span', { class: 'col-label', text: column.preset.label }),
+      h('span', { class: 'col-meta', text: meta }),
+    );
+
+    const body = h('div', { class: 'col-body' });
+    if (column.error) {
+      const { title, hint } = describeError(column.error);
+      body.appendChild(h('div', { class: 'col-error', text: title }));
+      body.appendChild(h('div', { class: 'col-empty', text: hint }));
+    } else if (column.results.length === 0) {
+      body.appendChild(h('div', { class: 'col-empty', text: state.loading ? '查询中…' : '没有结果' }));
+    } else {
+      const list = h('ol');
+      for (const result of column.results) list.appendChild(renderResult(result, terms, { compact: true }));
+      body.appendChild(list);
+    }
+
+    const foot = h('div', { class: 'col-foot' });
+    const focus = h('button', { class: 'link-btn', type: 'button', text: `只看 ${column.preset.site}` });
+    focus.addEventListener('click', () => {
+      state.filters.site = column.preset.site;
+      state.mode = 'single';
+      settings.mode = 'single';
+      persistSettings();
+      syncFilterInputs();
+      applyMode();
+      void runSearch({ pushUrl: true });
+    });
+    foot.appendChild(focus);
+
+    return h('section', { class: 'col' }, head, body, foot);
+  }
+
+  function applyMode(): void {
+    const comparing = state.mode === 'compare';
+    el.results.hidden = comparing;
+    el.pager.hidden = comparing;
+    el.compare.hidden = !comparing;
+    document.body.dataset.mode = state.mode;
+    for (const btn of Array.from(el.modeSwitch.querySelectorAll<HTMLButtonElement>('.seg'))) {
+      btn.setAttribute('aria-pressed', String(btn.dataset.mode === state.mode));
+    }
+    if (!comparing) clear(el.compare);
+  }
+
+  function setMode(mode: ResultMode): void {
+    if (state.mode === mode) return;
+    state.mode = mode;
+    settings.mode = mode;
+    persistSettings();
+    applyMode();
+    if (el.q.value.trim() && state.key) void runSearch({ pushUrl: true });
+    else renderStatus();
+  }
+
+  async function runCompare(text: string): Promise<void> {
+    const jobs = compareQueries(text, state.filters, CONFIG.comparePresets);
+    state.query = text;
+    state.built = '';
+    state.error = null;
+    state.loading = true;
+    state.page = 1;
+    state.results = [];
+    state.columns = jobs.map((job) => ({
+      preset: job.preset,
+      query: job.query,
+      results: [],
+      error: null,
+      cached: false,
+      elapsed: 0,
+    }));
+    el.empty.hidden = true;
+    renderCompare();
+    renderStatus();
+
+    inflightController?.abort();
+    const controller = new AbortController();
+    inflightController = controller;
+
+    const started = performance.now();
+    let paid = 0;
+    let hits = 0;
+
+    await Promise.all(
+      jobs.map(async (job, index) => {
+        const column = state.columns[index];
+        if (!column) return;
+        const cacheKey = `${job.query}|${CONFIG.compareCount}`;
+        const t0 = performance.now();
+        try {
+          const cached = cache.get(cacheKey);
+          if (cached) {
+            column.results = cached.results;
+            column.cached = true;
+            hits++;
+          } else {
+            const response = await flight.run(cacheKey, () =>
+              api.search(job.query, { count: CONFIG.compareCount, signal: controller.signal }),
+            );
+            if (response.results.length > 0) cache.set(cacheKey, response);
+            column.results = response.results;
+            paid++;
+          }
+        } catch (error) {
+          const apiError = toApiError(error);
+          if (apiError.kind !== 'aborted') column.error = apiError;
+        }
+        column.elapsed = performance.now() - t0;
+        renderCompare();
+      }),
+    );
+
+    state.loading = false;
+    state.elapsed = performance.now() - started;
+    state.cached = paid === 0;
+    stats.searches += paid;
+    stats.spend += paid * CONFIG.pricePerSuccessfulSearch;
+    stats.cacheHits += hits;
+    renderCompare();
+    renderStatus();
+    renderStats();
+    pushHistory(text);
+    syncUrl();
   }
 
   /* ---------------------------------------------------------------- */
@@ -689,6 +881,12 @@ export function createApp(): void {
   must<HTMLFormElement>('#key-form').addEventListener('submit', (event) => {
     event.preventDefault();
     saveKey();
+  });
+
+  el.modeSwitch.addEventListener('click', (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>('.seg');
+    const mode = target?.dataset.mode;
+    if (mode === 'single' || mode === 'compare') setMode(mode);
   });
 
   el.settingsBtn.addEventListener('click', openDrawer);
@@ -790,6 +988,7 @@ export function createApp(): void {
   renderHistory();
   renderStats();
   applyKey(state.key);
+  applyMode();
 
   const initial = readUrl();
   if (state.key && initial) {
