@@ -72,7 +72,7 @@ AI 摘要，不是十条蓝色链接。
 ### 安装
 
 ```bash
-git clone https://github.com/<你的用户名>/sift.git
+git clone https://github.com/seeyouyousee/sift.git
 cd sift
 npm ci            # 或 npm install
 npm run dev       # → http://127.0.0.1:5173
