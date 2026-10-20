@@ -1,9 +1,8 @@
 {
   "name": "sift-search",
-  "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "A BYOK web-search shell backed by the DeepSeek Search API. Static, client-side, no server.",
+  "description": "A BYOK web-search shell backed by the DeepSeek Search API: static, client-side, no server. Streamed answers with citations.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -21,5 +20,21 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^2.1.8"
-  }
+  },
+  "license": "MIT",
+  "keywords": [
+    "search",
+    "rag",
+    "deepseek",
+    "byok",
+    "static-site",
+    "pwa",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/sift.git"
+  },
+  "homepage": "https://github.com/OWNER/sift#readme",
+  "author": "Sift contributors"
 }
