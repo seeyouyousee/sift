@@ -1,13 +1,14 @@
-<p align="center"><img src="docs/logo.svg" width="360" alt="Sift" /></p>
+# Sift
 
-<p align="center">一个纯静态的搜索壳子：带你自己的 DeepSeek API Key，浏览器直连搜索接口，<br/>答案是带引用的 AI 摘要，不是十条蓝色链接。</p>
+![Sift](docs/logo.svg)
 
-<p align="center">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-4c8dff?style=flat-square" />
-  <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-4c8dff?style=flat-square" />
-  <img alt="tests" src="https://img.shields.io/badge/tests-133%20passing-3ecf8e?style=flat-square" />
-  <img alt="bundle" src="https://img.shields.io/badge/bundle-19%20kB%20gzip-4c8dff?style=flat-square" />
-</p>
+一个纯静态的搜索壳子：带你自己的 DeepSeek API Key，浏览器直连搜索接口，答案是带引用的
+AI 摘要，不是十条蓝色链接。
+
+![license](https://img.shields.io/badge/license-MIT-4c8dff?style=flat-square)
+![node](https://img.shields.io/badge/node-%E2%89%A522-4c8dff?style=flat-square)
+![tests](https://img.shields.io/badge/tests-133%20passing-3ecf8e?style=flat-square)
+![bundle](https://img.shields.io/badge/bundle-19%20kB%20gzip-4c8dff?style=flat-square)
 
 ![Sift 概览](docs/cover.png)
 
