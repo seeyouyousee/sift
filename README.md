@@ -1,30 +1,103 @@
-# Sift · 一个搜索壳子
+<p align="center"><img src="docs/logo.svg" width="360" alt="Sift" /></p>
 
-一个**纯静态**的百度式搜索页。没有后端、没有数据库、没有服务端 API Key：搜索由浏览器带着
-**你自己的** DeepSeek API Key 直连 `POST https://api.deepseek.com/v1/tools/search`。
+<p align="center">一个纯静态的搜索壳子：带你自己的 DeepSeek API Key，浏览器直连搜索接口，<br/>答案是带引用的 AI 摘要，不是十条蓝色链接。</p>
+
+<p align="center">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-4c8dff?style=flat-square" />
+  <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522-4c8dff?style=flat-square" />
+  <img alt="tests" src="https://img.shields.io/badge/tests-133%20passing-3ecf8e?style=flat-square" />
+  <img alt="bundle" src="https://img.shields.io/badge/bundle-19%20kB%20gzip-4c8dff?style=flat-square" />
+</p>
+
+![Sift 概览](docs/cover.png)
+
+> **不是 DeepSeek 官方产品**，与深度求索无隶属关系。**BYOK**：API Key 只存在你自己的浏览器
+> `localStorage` 里，不上传、不经任何中间服务器。
+
+## 目录
+
+- [这是什么](#这是什么)
+- [快速开始](#快速开始)
+- [功能](#功能)
+- [截图](#截图)
+- [结果质量：做了什么，以及删掉了什么](#结果质量做了什么以及删掉了什么)
+- [答案层：这才是「比百度好」的那一半](#答案层这才是比百度好的那一半)
+- [三种部署形态](#三种部署形态)
+- [为什么默认没有后端](#为什么默认没有后端)
+- [并发与钱（硬约束，不是 bug）](#并发与钱硬约束不是-bug)
+- [配置](#配置)
+- [项目结构](#项目结构)
+- [测试](#测试)
+- [常见问题](#常见问题)
+- [部署](#部署)
+- [合规与品牌红线](#合规与品牌红线)
+- [贡献](#贡献)
+- [许可证](#许可证)
+
+## 这是什么
+
+一个**纯静态**的搜索页面，数据来自 DeepSeek 的 Search / Fetch API。没有后端、没有数据库、
+没有服务端 API Key。
 
 ```
 浏览器 ──(你自己的 key)──▶ api.deepseek.com/v1/tools/search
-   └─ 缓存 / 同 query 合并 / 5QPS 令牌桶 / 本地分页 / 多站对比 —— 全在客户端
+   └─ 缓存 / 同 query 合并 / 5QPS 令牌桶 / 本地分页 / 多站对比 / AI 摘要 —— 全在客户端
 ```
 
-![深色主题](docs/screenshot-desktop.png)
+**适合谁**：想在自己的电脑上、或小范围内部署一个「能读的搜索页」的人；想学 agentic RAG 但在
+浏览器里就能跑起来的人；以及不想为搜索付订阅费、只想按次付费（¥0.005/次）的人。
+
+**不适合谁**：想要百度级索引覆盖、想要零配置即用、想要支持多租户 SaaS 的场景——它做不到，
+原因写在 [已知限制](#已知限制) 里。
 
 ## 快速开始
 
-```bash
-npm install
+### 前置要求
 
-npm run dev        # 开发服务器 http://127.0.0.1:5173
-npm run build      # 类型检查 + 产物到 dist/（gzip 约 17 kB）
-npm run serve      # 用 dist/ 起零依赖静态服务 http://127.0.0.1:8765
-npm test           # 单元测试 100 个
-npm run e2e        # 端到端 24 项检查（离线，window.fetch 打桩，不花钱）
-npm run e2e:live   # 真的调线上接口（需要 DEEPSEEK_API_KEY，约 ¥0.03）
+| 依赖 | 版本 | 说明 |
+| --- | --- | --- |
+| Node.js | **≥ 22**（推荐 22 LTS） | 构建与测试；`.nvmrc` 已提供 |
+| npm | ≥ 10 | 随 Node 附带 |
+| DeepSeek API Key | — | 在 [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) 创建，账号需有余额 |
+| 浏览器 | Chrome / Edge / Safari 近两年版本 | 需要 `fetch` + `ReadableStream`（AI 摘要流式） |
+
+项目**没有运行时依赖**，`dependencies` 为空；`devDependencies` 只有 Vite、TypeScript、Vitest。
+
+### 安装
+
+```bash
+git clone https://github.com/<你的用户名>/sift.git
+cd sift
+npm ci            # 或 npm install
+npm run dev       # → http://127.0.0.1:5173
 ```
 
-首次打开会让你粘贴 Key（在 <https://platform.deepseek.com/api_keys> 创建），
-它只写入本浏览器的 `localStorage`，右上角 ⚙ 可随时删除。
+不想装依赖？直接用官方发布产物也行：
+
+```bash
+npm run build     # 产物在 dist/，静态文件，可放到任意静态托管
+npm run serve     # 起一个零依赖静态服务 → http://127.0.0.1:8765
+```
+
+### 配置 Key
+
+1. 打开页面，会看到「先填你自己的 DeepSeek API Key」
+2. 粘贴 `sk-` 开头的 key，点「保存并开始」
+3. 它会写入本浏览器 `localStorage`；右上角 ⚙ →「删除本机 API Key」可随时清除
+
+### 验证安装
+
+```bash
+npm run build     # 类型检查 + 构建，应输出 dist/ 三个文件
+npm test          # 133 个单元测试
+npm run e2e       # 31 项端到端检查（离线，window.fetch 打桩，不花钱）
+```
+
+打开页面搜任意词，状态栏应该出现类似：
+
+```
+48 条结果 · 第 1–10 条 · 共 5 页 · 759ms · 本次 ¥0.005 · 合并重复 2
+```
 
 ## 功能
 
@@ -235,6 +308,44 @@ PWA 需要 HTTPS（`localhost` 例外）；service worker 只缓存同源静态�
    《AI 生成合成内容标识办法》加标识；纯 `snippet`（原文摘录）不涉及。
 3. **备案与内容安全**：境内公网运营需 ICP 备案；作为网络信息内容生产者还需承担审核义务。
    本机 / 内网 demo 不涉及这些。
+
+## 截图
+
+| 深色 | 浅色 |
+| --- | --- |
+| ![深色](docs/screenshot-desktop.png) | ![浅色](docs/screenshot-light.png) |
+
+| 多站对比 | 移动端 |
+| --- | --- |
+| ![对比](docs/screenshot-compare.png) | ![移动端](docs/screenshot-mobile.png) |
+
+## 常见问题
+
+**Q：提示「API Key 无效」？**
+Key 过期、被删、或复制时带了空格。到 ⚙ →「删除本机 API Key」重填。
+
+**Q：AI 摘要一直转圈或报 429？**
+摘要是一次额外的模型调用，踩到 5 次/秒的账号限速。等两秒重试；或 Settings 里关掉「AI 摘要」
+只留链接，功能不受影响。
+
+**Q：某条结果点「阅读正文」提示抓不到？**
+目标站点从服务端抓不到（被墙、需登录、反爬、只有 JS 渲染）。行内会给出原因和「在新标签打开原链接」，
+不影响上面的搜索结果。
+
+**Q：为什么搜出来的东西不如百度准？**
+因为索引规模差几个数量级，而且这个接口的排序目标是「适合模型摘录」而非「最想点开」。
+能改善的部分（去重、AI 摘要）已经做了，不能改善的部分写在了 [已知限制](#已知限制)。
+
+**Q：会收集我的数据吗？**
+不会。唯一的出网请求就是你的浏览器 → `api.deepseek.com`。没有埋点、没有后端、没有日志。
+
+**Q：能多人共用一个 key 吗？**
+不能也不建议。5 QPS 是账号级限速，多人共用会互相排队；想共享请走
+[三种部署形态](#三种部署形态)里的代理方案（C）。
+
+**Q：可以商用吗？**
+MIT 许可证允许商用。但你得自己处理备案、生成式 AI 内容标识、以及**不要把 DeepSeek 当作站名**
+（见[合规与品牌红线](#合规与品牌红线)）。
 
 ## 已知限制
 
