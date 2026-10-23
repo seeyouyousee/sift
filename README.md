@@ -1,55 +1,55 @@
 # Sift
 
-[English](./README.en.md) | 简体中文
+English | [简体中文](./README.zh-CN.md)
 
-**纯静态搜索页**：带你自己的 DeepSeek API Key，浏览器直连接口，首屏是**带引用的 AI 摘要**，不是十条蓝色链接。
+**A pure-static search page**: bring your own DeepSeek API key, the browser talks to the API directly, and the first screen is an **AI answer with citations**, not ten blue links.
 
 ![Sift](docs/screenshot-desktop.png)
 
-## 30 秒开始
+## Start in 30 seconds
 
-需要 Node ≥ 22 和一个 [DeepSeek API Key](https://platform.deepseek.com/api_keys)（账号需有余额，约 ¥0.005/次）。
+Requires Node ≥ 22 and a [DeepSeek API key](https://platform.deepseek.com/api_keys) (the account needs a balance; about ¥0.005 per search).
 
 ```bash
 git clone https://github.com/seeyouyousee/sift.git && cd sift
 npm ci && npm run dev        # → http://127.0.0.1:5173
 ```
 
-打开页面 → 粘贴 key → 搜索。key 只写进你自己浏览器的 `localStorage`，不经任何服务器。
+Open the page → paste the key → search. The key is written only to your own browser's `localStorage`; it never passes through any server.
 
-## 它做了什么
+## What it does
 
-- **搜索** 一次取 50 条，前端分页；翻页不产生请求，重复查询命中缓存
-- **AI 摘要** 取前 8 条来源流式合成一段答案，`[1][2]` 可点回到原文，卡片标注「AI 摘要」
-- **合并重复** 同页的多语言克隆（`/zh-cn/`、`/ko/`）和同标题重复自动合并
-- **多站对比** 一次查询拆成知乎 / GitHub / 微博 / B 站四栏并排，各自计费与缓存
-- **别的** 阅读正文、筛选条（站点/语言/时间）、深浅主题、PWA 离线壳、`/` 聚焦、`←/→` 翻页
+- **Search** fetches 50 results in one go and paginates client-side; paging makes no requests, and repeated queries hit the cache.
+- **AI summary** streams one paragraph synthesized from the top 8 sources, with `[1][2]` citations linking back to the originals; the card is labelled “AI summary”.
+- **Merge duplicates** automatically merges multilingual clones of the same page (`/zh-cn/`, `/ko/`) and same-title duplicates.
+- **Multi-site compare** splits one query into four columns (Zhihu / GitHub / Weibo / Bilibili), each billed and cached independently.
+- **Also**: reader view, filter bar (site / language / time), light and dark themes, a PWA offline shell, `/` to focus the search box, `←/→` to page.
 
-## 部署
-
-```bash
-npm run build      # 纯静态产物在 dist/，gzip 约 19 kB
-npm run serve      # 本地预览 → http://127.0.0.1:8765
-```
-
-扔到任何静态托管即可。仓库自带 GitHub Actions：推到 `main` 自动发布到 Pages。
-
-## 三条须知
-
-1. **不是 DeepSeek 官方产品**。站点名/域名请自己换，不要用 DeepSeek 品牌（开放平台协议 5.2 禁止）。
-2. **每人用自己的 key、付自己的账单**。限速 5 次/秒/账号，浏览器直连 `api.deepseek.com`。
-3. 公网展示 AI 摘要时**保留「AI 摘要」标识**，这是生成式内容标识要求。
-
-## 开发
+## Deploy
 
 ```bash
-npm test        # 133 个单元测试
-npm run e2e     # 31 项端到端检查（离线打桩，不花钱）
-npm run e2e:live  # 真调接口，约 ¥0.03
+npm run build      # pure static output in dist/, about 19 kB gzipped
+npm run serve      # local preview → http://127.0.0.1:8765
 ```
 
-改代码前先读 [设计取舍](docs/ARCHITECTURE.md)——里面记了哪些尝试被删掉、为什么。
-安装细节、配置项、成本模型、常见问题都在 [docs/FAQ.md](docs/FAQ.md)。
+Drop it on any static host. The repo ships a GitHub Actions workflow: push to `main` and it deploys to Pages.
+
+## Three things to know
+
+1. **Not an official DeepSeek product.** Change the site name and domain to your own; do not use the DeepSeek brand (forbidden by section 5.2 of the open-platform terms).
+2. **Everyone uses their own key and pays their own bill.** The rate limit is 5 requests/second per account; the browser connects directly to `api.deepseek.com`.
+3. When showing AI summaries publicly, **keep the “AI summary” label** — that is a generated-content disclosure requirement.
+
+## Development
+
+```bash
+npm test         # 133 unit tests
+npm run e2e      # 31 end-to-end checks (offline stubs, costs nothing)
+npm run e2e:live # hits the real API, about ¥0.03
+```
+
+Read the [design trade-offs](docs/ARCHITECTURE.md) before changing code — it records what was tried and deleted, and why.
+Install details, configuration, cost model and the FAQ live in [docs/FAQ.md](docs/FAQ.md).
 
 ## License
 
