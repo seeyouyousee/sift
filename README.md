@@ -1,5 +1,7 @@
 # Sift
 
+[English](./README.en.md) | 简体中文
+
 **纯静态搜索页**：带你自己的 DeepSeek API Key，浏览器直连接口，首屏是**带引用的 AI 摘要**，不是十条蓝色链接。
 
 ![Sift](docs/screenshot-desktop.png)
